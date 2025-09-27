@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NonIPFileDelivery.Models;
@@ -11,6 +12,7 @@ public class NonIPFileDeliveryService
     private readonly IConfigurationService _configService;
     private readonly INetworkService _networkService;
     private readonly ISecurityService _securityService;
+    private readonly IFrameService _frameService;
     
     private Configuration? _configuration;
     private CancellationTokenSource? _cancellationTokenSource;
@@ -22,12 +24,14 @@ public class NonIPFileDeliveryService
         ILoggingService logger,
         IConfigurationService configService,
         INetworkService networkService,
-        ISecurityService securityService)
+        ISecurityService securityService,
+        IFrameService frameService)
     {
         _logger = logger;
         _configService = configService;
         _networkService = networkService;
         _securityService = securityService;
+        _frameService = frameService;
     }
 
     public async Task<bool> StartAsync(Configuration configuration)
@@ -181,38 +185,168 @@ public class NonIPFileDeliveryService
     {
         try
         {
-            // Decrypt frame if encryption is enabled
-            if (_configuration?.Network.Encryption == true)
+            // Deserialize the frame using the frame service
+            var frame = _frameService.DeserializeFrame(frameData);
+            if (frame == null)
             {
-                _logger.Debug("Decrypting received frame...");
-                // In a real implementation, this would decrypt the frame
-                // For now, we just log that decryption would happen
-            }
-
-            // Scan for security threats
-            var scanResult = await _securityService.ScanData(frameData, $"frame_from_{sourceMac}");
-            if (!scanResult.IsClean)
-            {
-                _logger.Warning($"Security threat detected in frame from {sourceMac}: {scanResult.ThreatName}");
-                await _securityService.QuarantineFile($"frame_{DateTime.Now:yyyyMMdd_HHmmss}.bin", 
-                    $"Threat: {scanResult.ThreatName}");
+                _logger.Warning($"Failed to deserialize frame from {sourceMac}");
                 return;
             }
 
-            // Process the clean frame data
-            _logger.Info($"Processing clean frame from {sourceMac}");
-            
-            // In a real implementation, this would:
-            // 1. Parse the frame format
-            // 2. Extract file transfer protocol data
-            // 3. Handle file transfer operations (FTP/SFTP/PostgreSQL)
-            // 4. Send response frames as needed
-            
-            _logger.Debug($"Frame processed successfully from {sourceMac}");
+            _logger.Debug($"Processing frame: Type={frame.Header.Type}, Seq={frame.Header.SequenceNumber}, Flags={frame.Header.Flags}");
+
+            // Handle encrypted frames
+            if (frame.Header.Flags.HasFlag(FrameFlags.Encrypted))
+            {
+                if (_configuration?.Network.Encryption == true)
+                {
+                    _logger.Debug("Decrypting received frame...");
+                    // In a real implementation, this would decrypt the payload
+                    // For now, we just log that decryption would happen
+                }
+                else
+                {
+                    _logger.Warning("Received encrypted frame but encryption is disabled");
+                    return;
+                }
+            }
+
+            // Scan for security threats if it's a data or file transfer frame
+            if (frame.Header.Type == FrameType.Data || frame.Header.Type == FrameType.FileTransfer)
+            {
+                var scanResult = await _securityService.ScanData(frame.Payload, $"frame_{frame.Header.Type}_{frame.Header.SequenceNumber}");
+                if (!scanResult.IsClean)
+                {
+                    _logger.Warning($"Security threat detected in frame from {sourceMac}: {scanResult.ThreatName}");
+                    await _securityService.QuarantineFile($"frame_{DateTime.Now:yyyyMMdd_HHmmss}_{frame.Header.SequenceNumber}.bin", 
+                        $"Threat: {scanResult.ThreatName}");
+                    return;
+                }
+            }
+
+            // Process frame based on type
+            switch (frame.Header.Type)
+            {
+                case FrameType.Heartbeat:
+                    await ProcessHeartbeatFrame(frame, sourceMac);
+                    break;
+
+                case FrameType.Data:
+                    await ProcessDataFrame(frame, sourceMac);
+                    break;
+
+                case FrameType.FileTransfer:
+                    await ProcessFileTransferFrame(frame, sourceMac);
+                    break;
+
+                case FrameType.Control:
+                    await ProcessControlFrame(frame, sourceMac);
+                    break;
+
+                default:
+                    _logger.Warning($"Unknown frame type received: {frame.Header.Type} from {sourceMac}");
+                    break;
+            }
+
+            // Send acknowledgment if required
+            if (frame.Header.Flags.HasFlag(FrameFlags.RequireAck))
+            {
+                await SendAcknowledgment(frame.Header.SequenceNumber, sourceMac);
+            }
         }
         catch (Exception ex)
         {
             _logger.Error($"Error processing frame from {sourceMac}", ex);
+        }
+    }
+
+    private async Task ProcessHeartbeatFrame(NonIPFrame frame, string sourceMac)
+    {
+        _logger.Debug($"Heartbeat received from {sourceMac}");
+        
+        try
+        {
+            var payloadText = System.Text.Encoding.UTF8.GetString(frame.Payload);
+            _logger.Debug($"Heartbeat data: {payloadText}");
+            
+            // In a real implementation, this would update peer status and handle failover
+            // For now, we just log the heartbeat
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing heartbeat from {sourceMac}", ex);
+        }
+    }
+
+    private async Task ProcessDataFrame(NonIPFrame frame, string sourceMac)
+    {
+        _logger.Info($"Data frame received from {sourceMac}, size: {frame.Payload.Length} bytes");
+        
+        try
+        {
+            // In a real implementation, this would process application data
+            // For now, we just log the reception
+            var dataPreview = frame.Payload.Length > 50 ? 
+                System.Text.Encoding.UTF8.GetString(frame.Payload.Take(50).ToArray()) + "..." :
+                System.Text.Encoding.UTF8.GetString(frame.Payload);
+                
+            _logger.Debug($"Data preview: {dataPreview}");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing data frame from {sourceMac}", ex);
+        }
+    }
+
+    private async Task ProcessFileTransferFrame(NonIPFrame frame, string sourceMac)
+    {
+        _logger.Info($"File transfer frame received from {sourceMac}");
+        
+        try
+        {
+            var payloadText = System.Text.Encoding.UTF8.GetString(frame.Payload);
+            var fileTransferData = System.Text.Json.JsonSerializer.Deserialize<FileTransferFrame>(payloadText);
+            
+            if (fileTransferData != null)
+            {
+                _logger.Info($"File transfer: {fileTransferData.Operation} - {fileTransferData.FileName} " +
+                           $"(chunk {fileTransferData.ChunkIndex}/{fileTransferData.TotalChunks})");
+                
+                // In a real implementation, this would handle file assembly and storage
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing file transfer frame from {sourceMac}", ex);
+        }
+    }
+
+    private async Task ProcessControlFrame(NonIPFrame frame, string sourceMac)
+    {
+        _logger.Debug($"Control frame received from {sourceMac}");
+        
+        try
+        {
+            // In a real implementation, this would handle control messages
+            // like connection management, flow control, etc.
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing control frame from {sourceMac}", ex);
+        }
+    }
+
+    private async Task SendAcknowledgment(ushort sequenceNumber, string destinationMac)
+    {
+        try
+        {
+            var ackData = System.Text.Encoding.UTF8.GetBytes($"ACK:{sequenceNumber}");
+            await _networkService.SendFrame(ackData, destinationMac);
+            _logger.Debug($"Acknowledgment sent for sequence {sequenceNumber} to {destinationMac}");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Failed to send acknowledgment to {destinationMac}", ex);
         }
     }
 

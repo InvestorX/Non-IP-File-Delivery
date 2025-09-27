@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,16 +10,23 @@ namespace NonIPFileDelivery.Services;
 public class NetworkService : INetworkService
 {
     private readonly ILoggingService _logger;
+    private readonly IFrameService _frameService;
     private NetworkConfig? _config;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _listeningTask;
+    private byte[] _localMacAddress = new byte[6];
 
     public bool IsInterfaceReady { get; private set; }
     public event EventHandler<FrameReceivedEventArgs>? FrameReceived;
 
-    public NetworkService(ILoggingService logger)
+    public NetworkService(ILoggingService logger, IFrameService frameService)
     {
         _logger = logger;
+        _frameService = frameService;
+        
+        // Generate a temporary MAC address for simulation
+        Random.Shared.NextBytes(_localMacAddress);
+        _localMacAddress[0] = (byte)(_localMacAddress[0] & 0xFE | 0x02); // Set local bit, clear multicast bit
     }
 
     public async Task<bool> InitializeInterface(NetworkConfig config)
@@ -150,13 +158,34 @@ public class NetworkService : INetworkService
 
         try
         {
-            _logger.Debug($"Sending frame to {destinationMac}, size: {data.Length} bytes");
+            // Parse destination MAC address
+            var destMac = ParseMacAddress(destinationMac);
+            if (destMac == null)
+            {
+                _logger.Error($"Invalid destination MAC address: {destinationMac}");
+                return false;
+            }
+
+            // Create and serialize frame
+            var frame = _frameService.CreateDataFrame(_localMacAddress, destMac, data);
+            
+            if (_config.Encryption)
+            {
+                frame.Header.Flags |= FrameFlags.Encrypted;
+                // In a real implementation, encrypt the payload here
+                _logger.Debug("Frame marked for encryption");
+            }
+
+            var serializedFrame = _frameService.SerializeFrame(frame);
+            
+            _logger.Debug($"Sending frame to {destinationMac}, size: {serializedFrame.Length} bytes, type: {frame.Header.Type}");
             
             // In a real implementation, this would use raw socket or packet capture library
-            // For now, we simulate the send operation
-            await Task.Delay(1); // Simulate network latency
+            // For now, we simulate the send operation with realistic timing
+            var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
+            await Task.Delay(transmissionTime);
             
-            _logger.Debug($"Frame sent successfully to {destinationMac}");
+            _logger.Debug($"Frame sent successfully to {destinationMac} (seq: {frame.Header.SequenceNumber})");
             return true;
         }
         catch (Exception ex)
@@ -164,6 +193,45 @@ public class NetworkService : INetworkService
             _logger.Error($"Failed to send frame to {destinationMac}", ex);
             return false;
         }
+    }
+
+    private byte[]? ParseMacAddress(string macAddress)
+    {
+        try
+        {
+            if (macAddress == "FF:FF:FF:FF:FF:FF")
+            {
+                return new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            }
+
+            var parts = macAddress.Split(':');
+            if (parts.Length != 6)
+                return null;
+
+            var mac = new byte[6];
+            for (int i = 0; i < 6; i++)
+            {
+                mac[i] = Convert.ToByte(parts[i], 16);
+            }
+            return mac;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private int CalculateTransmissionTime(int frameSize)
+    {
+        // Calculate transmission time based on frame size and network speed
+        // Assume 1 Gbps baseline speed with some overhead
+        var bitsToTransmit = frameSize * 8;
+        var transmissionTimeMs = (double)bitsToTransmit / (1_000_000_000.0 / 1000.0); // 1 Gbps
+        
+        // Add some random network latency (1-10ms)
+        var networkLatency = Random.Shared.Next(1, 11);
+        
+        return Math.Max(1, (int)Math.Ceiling(transmissionTimeMs) + networkLatency);
     }
 
     private async Task ListenForFramesAsync(CancellationToken cancellationToken)
@@ -176,16 +244,12 @@ public class NetworkService : INetworkService
             {
                 // In a real implementation, this would use raw socket or packet capture library
                 // For now, we simulate receiving frames periodically
-                await Task.Delay(5000, cancellationToken); // Check every 5 seconds
+                await Task.Delay(3000, cancellationToken); // Check every 3 seconds
                 
-                // Simulate receiving a frame occasionally
-                if (Random.Shared.Next(1, 10) == 1) // 10% chance
+                // Simulate receiving different types of frames
+                if (Random.Shared.Next(1, 4) == 1) // 33% chance
                 {
-                    var simulatedFrame = new byte[] { 0x01, 0x02, 0x03, 0x04 };
-                    var simulatedMac = "00:11:22:33:44:55";
-                    
-                    _logger.Debug($"Simulated frame received from {simulatedMac}");
-                    FrameReceived?.Invoke(this, new FrameReceivedEventArgs(simulatedFrame, simulatedMac));
+                    await SimulateFrameReception(cancellationToken);
                 }
             }
         }
@@ -199,5 +263,77 @@ public class NetworkService : INetworkService
         }
         
         _logger.Debug("Frame listening loop ended");
+    }
+
+    private async Task SimulateFrameReception(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Simulate receiving different types of frames
+            var frameType = Random.Shared.Next(1, 4);
+            NonIPFrame? receivedFrame = null;
+            
+            switch (frameType)
+            {
+                case 1: // Heartbeat frame
+                    var remoteMac = GenerateRandomMacAddress();
+                    receivedFrame = _frameService.CreateHeartbeatFrame(remoteMac);
+                    break;
+                    
+                case 2: // Data frame
+                    var senderMac = GenerateRandomMacAddress();
+                    var testData = System.Text.Encoding.UTF8.GetBytes($"Test data from {MacAddressToString(senderMac)} at {DateTime.Now}");
+                    receivedFrame = _frameService.CreateDataFrame(senderMac, _localMacAddress, testData);
+                    break;
+                    
+                case 3: // File transfer frame
+                    var fileSenderMac = GenerateRandomMacAddress();
+                    var fileTransferData = new FileTransferFrame
+                    {
+                        Operation = FileOperation.Data,
+                        FileName = "test-file.txt",
+                        FileSize = 1024,
+                        ChunkIndex = 1,
+                        TotalChunks = 4,
+                        ChunkData = new byte[256],
+                        FileHash = "abc123def456"
+                    };
+                    Random.Shared.NextBytes(fileTransferData.ChunkData);
+                    receivedFrame = _frameService.CreateFileTransferFrame(fileSenderMac, _localMacAddress, fileTransferData);
+                    break;
+            }
+
+            if (receivedFrame != null)
+            {
+                // Serialize and deserialize to simulate real network reception
+                var serializedFrame = _frameService.SerializeFrame(receivedFrame);
+                var deserializedFrame = _frameService.DeserializeFrame(serializedFrame);
+                
+                if (deserializedFrame != null)
+                {
+                    var sourceMacString = MacAddressToString(deserializedFrame.Header.SourceMac);
+                    _logger.Debug($"Received frame: Type={deserializedFrame.Header.Type}, From={sourceMacString}, Seq={deserializedFrame.Header.SequenceNumber}");
+                    
+                    FrameReceived?.Invoke(this, new FrameReceivedEventArgs(serializedFrame, sourceMacString));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Error simulating frame reception", ex);
+        }
+    }
+
+    private byte[] GenerateRandomMacAddress()
+    {
+        var mac = new byte[6];
+        Random.Shared.NextBytes(mac);
+        mac[0] = (byte)(mac[0] & 0xFE | 0x02); // Set local bit, clear multicast bit
+        return mac;
+    }
+
+    private string MacAddressToString(byte[] mac)
+    {
+        return string.Join(":", mac.Select(b => b.ToString("X2")));
     }
 }

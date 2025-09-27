@@ -71,9 +71,10 @@ class Program
             }
 
             // Initialize services
-            var networkService = new NetworkService(_logger);
+            var frameService = new FrameService(_logger);
+            var networkService = new NetworkService(_logger, frameService);
             var securityService = new SecurityService(_logger);
-            _mainService = new NonIPFileDeliveryService(_logger, configService, networkService, securityService);
+            _mainService = new NonIPFileDeliveryService(_logger, configService, networkService, securityService, frameService);
 
             // Start the main service
             _logger.Info("Starting Non-IP File Delivery service...");
