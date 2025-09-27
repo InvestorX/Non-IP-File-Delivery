@@ -1,6 +1,8 @@
 ﻿using System;
 using System.IO;
 using System.Threading.Tasks;
+using NonIPFileDelivery.Models;
+using NonIPFileDelivery.Services;
 
 namespace NonIPFileDelivery;
 
@@ -9,6 +11,10 @@ class Program
     private static string _configPath = "config.ini";
     private static bool _debugMode = false;
     private static string _logLevel = "Warning";
+    
+    // Service instances
+    private static ILoggingService? _logger;
+    private static NonIPFileDeliveryService? _mainService;
 
     static async Task<int> Main(string[] args)
     {
@@ -20,42 +26,85 @@ class Program
         {
             ParseArguments(args);
             
+            // Initialize logging service
+            _logger = new LoggingService();
+            SetupLogging();
+
+            _logger.Info("Starting Non-IP File Delivery Service");
+            
             // Load configuration
+            var configService = new ConfigurationService();
+            Configuration configuration;
+            
             if (!File.Exists(_configPath))
             {
-                Console.WriteLine($"⚠️ 設定ファイルが見つかりません: {_configPath}");
-                Console.WriteLine("デフォルト設定ファイルを作成しています...");
-                CreateDefaultConfig();
+                _logger.Warning($"Configuration file not found: {_configPath}");
+                _logger.Info("Creating default configuration file...");
+                configService.CreateDefaultConfiguration(_configPath);
             }
 
-            var config = LoadConfiguration(_configPath);
+            try
+            {
+                configuration = configService.LoadConfiguration(_configPath);
+                _logger.Info($"Configuration loaded from: {Path.GetFullPath(_configPath)}");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Failed to load configuration: {ex.Message}");
+                return 2;
+            }
+            
+            // Override log level if specified in command line
+            if (!string.IsNullOrEmpty(_logLevel))
+            {
+                configuration.General.LogLevel = _logLevel;
+            }
+            
+            // Apply configuration to logging
+            ApplyLoggingConfiguration(configuration.General);
             
             if (_debugMode)
             {
-                Console.WriteLine("🐛 デバッグモードで実行中");
-                Console.WriteLine($"📁 設定ファイル: {Path.GetFullPath(_configPath)}");
-                Console.WriteLine($"📊 ログレベル: {_logLevel}");
+                _logger.Debug("Debug mode enabled");
+                _logger.Debug($"Configuration file: {Path.GetFullPath(_configPath)}");
+                _logger.Debug($"Log level: {configuration.General.LogLevel}");
             }
 
-            Console.WriteLine("🚀 Non-IP File Delivery サービスを開始しています...");
+            // Initialize services
+            var networkService = new NetworkService(_logger);
+            var securityService = new SecurityService(_logger);
+            _mainService = new NonIPFileDeliveryService(_logger, configService, networkService, securityService);
+
+            // Start the main service
+            _logger.Info("Starting Non-IP File Delivery service...");
             
-            // Simulate service startup
-            await SimulateServiceStartup();
+            if (!await _mainService.StartAsync(configuration))
+            {
+                _logger.Error("Failed to start service");
+                return 1;
+            }
             
+            _logger.Info("Service started successfully");
             Console.WriteLine("✅ サービスが正常に開始されました");
             Console.WriteLine("終了するには Ctrl+C を押してください");
             
             // Keep running until Ctrl+C
             await WaitForShutdown();
             
+            // Stop the service
+            await _mainService.StopAsync();
+            
             return 0;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ エラーが発生しました: {ex.Message}");
+            var errorMsg = $"Critical error: {ex.Message}";
+            _logger?.Error(errorMsg, ex);
+            Console.WriteLine($"❌ {errorMsg}");
+            
             if (_debugMode)
             {
-                Console.WriteLine($"スタックトレース: {ex.StackTrace}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
             }
             return 1;
         }
@@ -103,58 +152,32 @@ class Program
         Console.WriteLine("  --help, -h             このヘルプを表示");
     }
 
-    private static void CreateDefaultConfig()
+    private static void SetupLogging()
     {
-        var defaultConfig = @"[General]
-Mode=ActiveStandby  # ActiveStandby | LoadBalancing
-LogLevel=Warning    # Debug | Info | Warning | Error
-
-[Network]
-Interface=eth0
-FrameSize=9000
-Encryption=true
-EtherType=0x88B5
-
-[Security]
-EnableVirusScan=true
-ScanTimeout=5000    # milliseconds
-QuarantinePath=C:\NonIP\Quarantine
-PolicyFile=security_policy.ini
-
-[Performance]
-MaxMemoryMB=8192
-BufferSize=65536
-ThreadPool=auto
-
-[Redundancy]
-HeartbeatInterval=1000  # milliseconds
-FailoverTimeout=5000
-DataSyncMode=realtime";
-
-        File.WriteAllText(_configPath, defaultConfig);
-        Console.WriteLine($"✅ デフォルト設定ファイルを作成しました: {_configPath}");
+        if (_logger == null) return;
+        
+        // Set up file logging
+        var logDirectory = "logs";
+        var logFileName = $"NonIP-{DateTime.Now:yyyy-MM-dd}.log";
+        var logPath = Path.Combine(logDirectory, logFileName);
+        
+        _logger.SetLogToFile(logPath);
+        
+        // Set initial log level
+        if (Enum.TryParse<LogLevel>(_logLevel, true, out var level))
+        {
+            _logger.SetLogLevel(level);
+        }
     }
 
-    private static string LoadConfiguration(string configPath)
+    private static void ApplyLoggingConfiguration(GeneralConfig config)
     {
-        var config = File.ReadAllText(configPath);
-        Console.WriteLine($"📋 設定ファイルを読み込みました: {configPath}");
-        return config;
-    }
-
-    private static async Task SimulateServiceStartup()
-    {
-        Console.WriteLine("🔧 ネットワークインターフェースを初期化中...");
-        await Task.Delay(500);
+        if (_logger == null) return;
         
-        Console.WriteLine("🔐 セキュリティモジュールを読み込み中...");
-        await Task.Delay(300);
-        
-        Console.WriteLine("⚡ パフォーマンス設定を適用中...");
-        await Task.Delay(200);
-        
-        Console.WriteLine("🔄 冗長化設定を確認中...");
-        await Task.Delay(300);
+        if (Enum.TryParse<LogLevel>(config.LogLevel, true, out var level))
+        {
+            _logger.SetLogLevel(level);
+        }
     }
 
     private static async Task WaitForShutdown()
