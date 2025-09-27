@@ -156,33 +156,181 @@ BlockedPatterns=malware,virus,trojan";
 
     private static void ShowConfigurationMenu()
     {
-        Console.WriteLine("📋 設定メニュー");
-        Console.WriteLine("1. 設定ファイル作成");
-        Console.WriteLine("2. 設定ファイル検証");
-        Console.WriteLine("3. 終了");
-        Console.WriteLine();
-        Console.Write("選択してください (1-3): ");
-        
-        var choice = Console.ReadLine();
-        
-        switch (choice)
+        while (true)
         {
-            case "1":
-                CreateConfiguration();
-                break;
-            case "2":
-                Console.Write("設定ファイルのパスを入力してください (デフォルト: config.ini): ");
-                var path = Console.ReadLine();
-                if (string.IsNullOrWhiteSpace(path))
-                    path = "config.ini";
-                ValidateConfiguration(path);
-                break;
-            case "3":
-                Console.WriteLine("👋 設定ツールを終了します");
-                break;
-            default:
-                Console.WriteLine("❌ 無効な選択です");
-                break;
+            Console.WriteLine();
+            Console.WriteLine("🔧 設定メニュー:");
+            Console.WriteLine("1. 新しい設定ファイルを作成");
+            Console.WriteLine("2. 設定ファイルを検証");
+            Console.WriteLine("3. 設定ファイルを表示");
+            Console.WriteLine("4. ネットワークインターフェース一覧");
+            Console.WriteLine("5. セキュリティポリシーを作成");
+            Console.WriteLine("6. 終了");
+            Console.Write("選択してください (1-6): ");
+
+            var choice = Console.ReadLine();
+            
+            switch (choice)
+            {
+                case "1":
+                    CreateConfiguration();
+                    break;
+                case "2":
+                    Console.Write("検証する設定ファイルのパス (デフォルト: config.ini): ");
+                    var path = Console.ReadLine();
+                    if (string.IsNullOrEmpty(path)) path = "config.ini";
+                    ValidateConfiguration(path);
+                    break;
+                case "3":
+                    DisplayConfiguration();
+                    break;
+                case "4":
+                    ListNetworkInterfaces();
+                    break;
+                case "5":
+                    CreateSecurityPolicy();
+                    break;
+                case "6":
+                    Console.WriteLine("設定ツールを終了します。");
+                    return;
+                default:
+                    Console.WriteLine("無効な選択です。1-6を選択してください。");
+                    break;
+            }
+        }
+    }
+
+    private static void DisplayConfiguration()
+    {
+        Console.Write("表示する設定ファイルのパス (デフォルト: config.ini): ");
+        var path = Console.ReadLine();
+        if (string.IsNullOrEmpty(path)) path = "config.ini";
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                Console.WriteLine($"❌ 設定ファイルが見つかりません: {path}");
+                return;
+            }
+
+            var content = File.ReadAllText(path);
+            Console.WriteLine();
+            Console.WriteLine($"📋 設定ファイル内容 ({path}):");
+            Console.WriteLine(new string('-', 50));
+            Console.WriteLine(content);
+            Console.WriteLine(new string('-', 50));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ 設定ファイルの読み込みに失敗しました: {ex.Message}");
+        }
+    }
+
+    private static void ListNetworkInterfaces()
+    {
+        Console.WriteLine("🔍 利用可能なネットワークインターフェース:");
+        Console.WriteLine();
+
+        try
+        {
+            var interfaces = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces();
+            int index = 1;
+
+            foreach (var ni in interfaces)
+            {
+                var status = ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up ? "✅" : "❌";
+                Console.WriteLine($"{index}. {status} {ni.Name}");
+                Console.WriteLine($"   説明: {ni.Description}");
+                Console.WriteLine($"   タイプ: {ni.NetworkInterfaceType}");
+                Console.WriteLine($"   状態: {ni.OperationalStatus}");
+                Console.WriteLine($"   スピード: {(ni.Speed > 0 ? $"{ni.Speed / 1_000_000} Mbps" : "不明")}");
+                
+                // Display MAC address if available
+                try
+                {
+                    var physicalAddress = ni.GetPhysicalAddress();
+                    if (physicalAddress != null && physicalAddress.ToString() != "")
+                    {
+                        Console.WriteLine($"   MACアドレス: {physicalAddress}");
+                    }
+                }
+                catch { }
+
+                Console.WriteLine();
+                index++;
+            }
+
+            Console.WriteLine($"総数: {interfaces.Length} インターフェース");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ ネットワークインターフェースの取得に失敗しました: {ex.Message}");
+        }
+    }
+
+    private static void CreateSecurityPolicy()
+    {
+        Console.WriteLine("🔐 セキュリティポリシーファイルを作成します");
+        
+        var policyPath = "security_policy.ini";
+        Console.Write($"ポリシーファイル名 (デフォルト: {policyPath}): ");
+        var inputPath = Console.ReadLine();
+        if (!string.IsNullOrEmpty(inputPath))
+        {
+            policyPath = inputPath;
+        }
+
+        var securityPolicy = @"[FileExtensions]
+# 許可するファイル拡張子 (カンマ区切り)
+Allowed=.txt,.pdf,.docx,.xlsx,.pptx,.csv,.xml,.json
+
+# ブロックするファイル拡張子 (カンマ区切り)  
+Blocked=.exe,.bat,.cmd,.vbs,.scr,.com,.pif,.js,.jar
+
+[FileSize]
+# 最大ファイルサイズ（MB）
+MaxSizeMB=3072
+
+# 最小ファイルサイズ（KB）
+MinSizeKB=1
+
+[ContentType]
+# 許可するMIMEタイプ
+AllowedTypes=text/*,application/pdf,application/msword,application/vnd.ms-excel,application/json
+
+# ブロックするコンテンツパターン
+BlacklistedPatterns=malware,virus,trojan,backdoor,keylogger
+
+[ScanSettings]
+# スキャンタイムアウト（ミリ秒）
+TimeoutMs=30000
+
+# 並行スキャン数
+ConcurrentScans=4
+
+# 隔離フォルダ
+QuarantineFolder=C:\NonIP\Quarantine
+
+[Encryption]
+# 暗号化アルゴリズム
+Algorithm=AES-256-GCM
+
+# キー交換方式
+KeyExchange=ECDH-P256
+
+# 証明書検証
+RequireCertificate=true";
+
+        try
+        {
+            File.WriteAllText(policyPath, securityPolicy);
+            Console.WriteLine($"✅ セキュリティポリシーファイルを作成しました: {policyPath}");
+            Console.WriteLine("ポリシーファイルを編集して、環境に合わせてカスタマイズしてください。");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ セキュリティポリシーファイルの作成に失敗しました: {ex.Message}");
         }
     }
 }

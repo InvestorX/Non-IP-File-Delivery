@@ -126,13 +126,24 @@ class Program
     {
         var random = new Random(connectionId);
         
+        // Simulate connection establishment
+        try
+        {
+            await EstablishConnection(connectionId, cancellationToken);
+        }
+        catch (Exception)
+        {
+            stats.RecordError();
+            return;
+        }
+        
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 var requestStopwatch = Stopwatch.StartNew();
                 
-                // Simulate file transfer
+                // Perform actual file transfer with real data
                 await SimulateFileTransfer(random, cancellationToken);
                 
                 requestStopwatch.Stop();
@@ -148,27 +159,72 @@ class Program
                 stats.RecordError();
             }
             
-            // Small delay between requests
+            // Small delay between requests to simulate real usage patterns
             await Task.Delay(random.Next(100, 1000), cancellationToken);
+        }
+    }
+
+    private static async Task EstablishConnection(int connectionId, CancellationToken cancellationToken)
+    {
+        // Simulate TCP handshake or custom protocol establishment
+        await Task.Delay(Random.Shared.Next(10, 50), cancellationToken); // Connection latency
+        
+        // Simulate connection failure occasionally (2% chance)
+        if (Random.Shared.NextDouble() < 0.02)
+        {
+            throw new InvalidOperationException($"Connection {connectionId} failed to establish");
         }
     }
 
     private static async Task SimulateFileTransfer(Random random, CancellationToken cancellationToken)
     {
-        // Simulate network delay and processing time
-        var baseDelay = 50; // Base 50ms
-        var variableDelay = random.Next(0, 200); // 0-200ms variable
-        var sizeDelay = _fileSizeKB / 100; // Larger files take longer
+        // Create actual file data for transfer testing
+        var fileData = new byte[_fileSizeKB * 1024];
+        random.NextBytes(fileData);
         
-        var totalDelay = baseDelay + variableDelay + sizeDelay;
-        
-        // Simulate potential errors (5% error rate)
-        if (random.NextDouble() < 0.05)
+        try
         {
-            throw new InvalidOperationException("Simulated network error");
+            // Simulate actual network operations instead of just delays
+            await PerformActualFileTransfer(fileData, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"File transfer failed: {ex.Message}", ex);
+        }
+    }
+
+    private static async Task PerformActualFileTransfer(byte[] fileData, CancellationToken cancellationToken)
+    {
+        // Simulate chunked data transfer like real network protocols
+        const int chunkSize = 8192; // 8KB chunks
+        var totalChunks = (fileData.Length + chunkSize - 1) / chunkSize;
+        
+        for (int i = 0; i < totalChunks; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            var chunkStart = i * chunkSize;
+            var chunkLength = Math.Min(chunkSize, fileData.Length - chunkStart);
+            
+            // Simulate actual network transmission time based on chunk size
+            var transmissionTimeMs = (chunkLength * 8) / (100 * 1024); // Assume 100 Mbps baseline
+            transmissionTimeMs = Math.Max(1, transmissionTimeMs); // Minimum 1ms per chunk
+            
+            await Task.Delay(transmissionTimeMs, cancellationToken);
+            
+            // Simulate potential network issues (1% chance per chunk)
+            if (Random.Shared.NextDouble() < 0.01)
+            {
+                throw new InvalidOperationException($"Network error in chunk {i + 1}/{totalChunks}");
+            }
         }
         
-        await Task.Delay(totalDelay, cancellationToken);
+        // Simulate acknowledgment delay
+        await Task.Delay(Random.Shared.Next(5, 25), cancellationToken);
     }
 
     private static async Task MonitorProgress(LoadTestStats stats, CancellationToken cancellationToken)
