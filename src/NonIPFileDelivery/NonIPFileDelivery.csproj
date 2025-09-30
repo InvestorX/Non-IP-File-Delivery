@@ -9,10 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Raw Ethernetパケットキャプチャ -->
+    <!-- Raw Ethernet / パケット処理 -->
     <PackageReference Include="SharpPcap" Version="6.2.5" />
     <PackageReference Include="PacketDotNet" Version="1.4.7" />
-    
+
     <!-- 構造化ロギング -->
     <PackageReference Include="Serilog" Version="3.1.1" />
     <PackageReference Include="Serilog.Extensions.Logging" Version="8.0.0" />
@@ -20,20 +20,20 @@
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="Serilog.Sinks.Seq" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.Elasticsearch" Version="9.0.3" />
-    
+
     <!-- 設定管理 -->
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.0" />
-    
-    <!-- 依存性注入 -->
+
+    <!-- DI / Logging 抽象 -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
-    
+
     <!-- TPL Dataflow -->
     <PackageReference Include="System.Threading.Tasks.Dataflow" Version="8.0.0" />
-    
+
     <!-- その他 -->
     <PackageReference Include="System.Collections.Immutable" Version="8.0.0" />
   </ItemGroup>
