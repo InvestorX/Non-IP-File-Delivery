@@ -1,15 +1,10 @@
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using NonIPFileDelivery.Models;
-using NonIPFileDelivery.Exceptions;
 
 namespace NonIPFileDelivery.Services;
 
 /// <summary>
-/// パケット処理パイプライン（TPL Dataflow使用）
-/// 受信パケットを複数のステージで並列処理
+/// TPL Dataflow によるパケット処理パイプライン
 /// </summary>
 public class PacketProcessingPipeline : IDisposable
 {
@@ -17,71 +12,57 @@ public class PacketProcessingPipeline : IDisposable
     private readonly IFrameService _frameService;
     private readonly ISecurityService _securityService;
 
-    // パイプラインブロック
     private TransformBlock<byte[], NonIPFrame?>? _deserializeBlock;
     private TransformBlock<NonIPFrame?, (NonIPFrame? Frame, ScanResult? ScanResult)>? _securityBlock;
     private ActionBlock<(NonIPFrame? Frame, ScanResult? ScanResult)>? _processBlock;
 
-    // パイプライン統計
     private long _totalPacketsProcessed;
     private long _totalPacketsDropped;
     private long _totalSecurityBlocks;
+    private long _totalBytesProcessed;
 
-    // リソース管理（追加）
     private CancellationTokenSource? _pipelineCts;
     private bool _disposed;
+    private readonly System.Diagnostics.Stopwatch _uptime = new();
+    private DateTime _startTime;
 
     public PacketProcessingPipeline(
-    // リソース管理（追加）
         ILoggingService logger,
-    private CancellationTokenSource? _pipelineCts;
         IFrameService frameService,
-    private bool _disposed;
         ISecurityService securityService)
-
     {
-
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _frameService = frameService ?? throw new ArgumentNullException(nameof(frameService));
         _securityService = securityService ?? throw new ArgumentNullException(nameof(securityService));
     }
 
-    /// <summary>
-    /// パイプラインを初期化
-    /// </summary>
     public void Initialize()
     {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(PacketProcessingPipeline));
-        
+        if (_disposed) throw new ObjectDisposedException(nameof(PacketProcessingPipeline));
+
         _pipelineCts = new CancellationTokenSource();
-        
+        _startTime = DateTime.UtcNow;
+        _uptime.Start();
+
         var linkOptions = new DataflowLinkOptions { PropagateCompletion = true };
 
-        // ステージ1: フレームのデシリアライズ（並列度: 4）
         _deserializeBlock = new TransformBlock<byte[], NonIPFrame?>(
-            rawData =>
+            raw =>
             {
-                if (_pipelineCts.Token.IsCancellationRequested)
-                    return null;
-                
+                if (_pipelineCts!.Token.IsCancellationRequested) return null;
                 try
                 {
                     using (_logger.BeginPerformanceScope("FrameDeserialization"))
                     {
-                        var frame = _frameService.DeserializeFrame(rawData);
-                        
-                        if (frame == null)
-                        {
-                            Interlocked.Increment(ref _totalPacketsDropped);
-                        }
-                        
+                        var frame = _frameService.DeserializeFrame(raw);
+                        if (frame == null) Interlocked.Increment(ref _totalPacketsDropped);
+                        else Interlocked.Add(ref _totalBytesProcessed, raw.Length);
                         return frame;
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error($"Frame deserialization failed: {ex.Message}", ex);
+                    _logger.Error("Frame deserialization failed", ex);
                     Interlocked.Increment(ref _totalPacketsDropped);
                     return null;
                 }
@@ -89,33 +70,19 @@ public class PacketProcessingPipeline : IDisposable
             new ExecutionDataflowBlockOptions
             {
                 MaxDegreeOfParallelism = 4,
-                BoundedCapacity = 1000, // バックプレッシャー制御
-                SingleProducerConstrained = false,
-                CancellationToken = _pipelineCts.Token // 追加
+                BoundedCapacity = 1000,
+                CancellationToken = _pipelineCts.Token
             });
 
-        // ステージ2: セキュリティ検閲（並列度: 2、CPU集約的）
-        _securityBlock = new TransformBlock<NonIPFrame?, (NonIPFrame? Frame, ScanResult? ScanResult)>(
+        _securityBlock = new TransformBlock<NonIPFrame?, (NonIPFrame?, ScanResult?)>(
             async frame =>
             {
-                if (frame == null)
-                    return (null, null);
-
+                if (frame == null) return (null, null);
                 try
                 {
-                    // ペイロードをスキャン
-                    var scanResult = await _securityService.ScanData(
-                        frame.Payload,
-                        $"frame_{frame.Header.SequenceNumber}");
-
-                    if (!scanResult.IsClean)
-                    {
-                        Interlocked.Increment(ref _totalSecurityBlocks);
-                        _logger.Warning(
-                            $"Security threat detected in frame {frame.Header.SequenceNumber}: {scanResult.ThreatName}");
-                    }
-
-                    return (frame, scanResult);
+                    var result = await _securityService.ScanData(frame.Payload, $"frame_{frame.Header.SequenceNumber}");
+                    if (!result.IsClean) Interlocked.Increment(ref _totalSecurityBlocks);
+                    return (frame, result);
                 }
                 catch (Exception ex)
                 {
@@ -127,43 +94,33 @@ public class PacketProcessingPipeline : IDisposable
             {
                 MaxDegreeOfParallelism = 2,
                 BoundedCapacity = 500,
-                SingleProducerConstrained = true, // 前段から順次受信
-                CancellationToken = _pipelineCts.Token // 追加
+                CancellationToken = _pipelineCts.Token
             });
 
-        // ステージ3: フレーム処理（並列度: 1、順序保証）
-        _processBlock = new ActionBlock<(NonIPFrame? Frame, ScanResult? ScanResult)>(
+        _processBlock = new ActionBlock<(NonIPFrame?, ScanResult?)>(
             async tuple =>
             {
-                var (frame, scanResult) = tuple;
-
-                if (frame == null)
-                    return;
+                var (frame, scan) = tuple;
+                if (frame == null) return;
 
                 try
                 {
-                    // セキュリティチェック
-                    if (scanResult != null && !scanResult.IsClean)
+                    if (scan != null && !scan.IsClean)
                     {
                         _logger.Warning($"Dropping malicious frame {frame.Header.SequenceNumber}");
-                        await _securityService.QuarantineFile(
-                            $"frame_{frame.Header.SequenceNumber}.bin",
-                            scanResult.ThreatName ?? "Unknown threat");
-                        
+                        await _securityService.QuarantineFile($"frame_{frame.Header.SequenceNumber}.bin", scan.ThreatName ?? "Unknown threat");
                         Interlocked.Increment(ref _totalPacketsDropped);
                         return;
                     }
 
-                    // フレーム処理ロジック（既存処理を呼び出し）
                     await ProcessFrameAsync(frame);
-
                     Interlocked.Increment(ref _totalPacketsProcessed);
 
                     _logger.LogWithProperties(
-                        LogLevel.Debug,
-                        "Frame processed successfully",
-                        ("SequenceNumber", frame.Header.SequenceNumber),
-                        ("FrameType", frame.Header.Type.ToString()),
+                        Models.LogLevel.Debug,
+                        "Frame processed",
+                        ("Seq", frame.Header.SequenceNumber),
+                        ("Type", frame.Header.Type.ToString()),
                         ("PayloadSize", frame.Payload.Length));
                 }
                 catch (Exception ex)
@@ -174,135 +131,124 @@ public class PacketProcessingPipeline : IDisposable
             },
             new ExecutionDataflowBlockOptions
             {
-                MaxDegreeOfParallelism = 1, // 順序保証のため
+                MaxDegreeOfParallelism = 1,
                 BoundedCapacity = 100,
-                SingleProducerConstrained = true,                
-                CancellationToken = _pipelineCts.Token // 追加
+                CancellationToken = _pipelineCts.Token
             });
 
-        // パイプライン接続
-        _deserializeBlock.LinkTo(_securityBlock, linkOptions, frame => frame != null);
-        _deserializeBlock.LinkTo(DataflowBlock.NullTarget<NonIPFrame?>(), frame => frame == null); // nullは破棄
-
+        _deserializeBlock.LinkTo(_securityBlock, linkOptions, f => f != null);
+        _deserializeBlock.LinkTo(DataflowBlock.NullTarget<NonIPFrame?>(), f => f == null);
         _securityBlock.LinkTo(_processBlock, linkOptions);
 
-        _logger.Info("Packet processing pipeline initialized successfully");
+        _logger.Info("Packet processing pipeline initialized");
     }
 
-    /// <summary>
-    /// パケットをパイプラインに投入
-    /// </summary>
-    /// <param name="rawData">生のパケットデータ</param>
-    /// <returns>投入が成功したかどうか</returns>
-    public async Task<bool> EnqueuePacketAsync(byte[] rawData)
+    public async Task<bool> EnqueuePacketAsync(byte[] rawData, TimeSpan? timeout = null)
     {
-        if (_deserializeBlock == null)
+        if (_disposed) throw new ObjectDisposedException(nameof(PacketProcessingPipeline));
+        if (_deserializeBlock == null) throw new InvalidOperationException("Pipeline not initialized.");
+        ArgumentNullException.ThrowIfNull(rawData);
+        if (rawData.Length == 0)
         {
-            throw new InvalidOperationException("Pipeline not initialized. Call Initialize() first.");
+            _logger.Warning("Attempted to enqueue empty packet");
+            return false;
         }
 
-        return await _deserializeBlock.SendAsync(rawData);
+        try
+        {
+            using var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(5));
+            return await _deserializeBlock.SendAsync(rawData, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Warning("Packet enqueue timeout");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to enqueue packet", ex);
+            return false;
+        }
     }
 
-    /// <summary>
-    /// パイプラインを完了し、すべての処理を待機
-    /// </summary>
     public async Task CompleteAsync()
     {
+        if (_disposed) return;
         _logger.Info("Completing packet processing pipeline...");
-
         _deserializeBlock?.Complete();
-
         if (_processBlock != null)
         {
-            await _processBlock.Completion;
+            try { await _processBlock.Completion.ConfigureAwait(false); }
+            catch (Exception ex) { _logger.Error("Error during pipeline completion", ex); }
         }
 
-        _logger.Info($"Pipeline completed. Processed: {_totalPacketsProcessed}, " +
-                    $"Dropped: {_totalPacketsDropped}, " +
-                    $"Security blocks: {_totalSecurityBlocks}");
+        _logger.Info($"Pipeline completed. Processed={_totalPacketsProcessed}, Dropped={_totalPacketsDropped}, SecBlocks={_totalSecurityBlocks}");
     }
 
-    /// <summary>
-    /// パイプライン統計を取得
-    /// </summary>
     public PipelineStatistics GetStatistics()
     {
+        var uptime = _uptime.Elapsed;
+        var total = Interlocked.Read(ref _totalPacketsProcessed) + Interlocked.Read(ref _totalPacketsDropped);
+        var bytes = Interlocked.Read(ref _totalBytesProcessed);
+
         return new PipelineStatistics
         {
             TotalPacketsProcessed = Interlocked.Read(ref _totalPacketsProcessed),
             TotalPacketsDropped = Interlocked.Read(ref _totalPacketsDropped),
             TotalSecurityBlocks = Interlocked.Read(ref _totalSecurityBlocks),
+            TotalBytesProcessed = bytes,
             DeserializeQueueCount = _deserializeBlock?.InputCount ?? 0,
             SecurityQueueCount = _securityBlock?.InputCount ?? 0,
-            ProcessQueueCount = _processBlock?.InputCount ?? 0
+            ProcessQueueCount = _processBlock?.InputCount ?? 0,
+            Uptime = uptime,
+            StartTime = _startTime,
+            PacketsPerSecond = uptime.TotalSeconds > 0 ? total / uptime.TotalSeconds : 0,
+            ThroughputMbps = uptime.TotalSeconds > 0 ? (bytes * 8.0 / 1_000_000.0) / uptime.TotalSeconds : 0
         };
     }
 
-    /// <summary>
-    /// フレームを処理（既存のロジックを呼び出す）
-    /// </summary>
     private async Task ProcessFrameAsync(NonIPFrame frame)
     {
-        // フレームタイプに応じた処理
         switch (frame.Header.Type)
         {
             case FrameType.Heartbeat:
-                _logger.Debug($"Heartbeat received from {MacAddressToString(frame.Header.SourceMac)}");
-                // ハートビート処理（冗長化機能で使用）
+                _logger.Debug($"Heartbeat received from {MacToString(frame.Header.SourceMac)}");
                 break;
-
             case FrameType.Data:
                 _logger.Debug($"Data frame received: {frame.Payload.Length} bytes");
-                // データ処理
                 break;
-
             case FrameType.FileTransfer:
-                _logger.Info($"File transfer frame received");
-                // ファイル転送処理
+                _logger.Info("File transfer frame received");
                 break;
-
             case FrameType.Acknowledgment:
-                _logger.Debug($"ACK received for sequence {frame.Header.SequenceNumber}");
-                // ACK処理
+                _logger.Debug($"ACK received: {frame.Header.SequenceNumber}");
                 break;
-
             default:
                 _logger.Warning($"Unknown frame type: {frame.Header.Type}");
                 break;
         }
-
-        // 処理を非同期にシミュレート
-        await Task.Delay(1);
+        await Task.Yield();
     }
 
-    private string MacAddressToString(byte[] mac)
-    {
-        return string.Join(":", Array.ConvertAll(mac, b => b.ToString("X2")));
-    }
+    private static string MacToString(byte[] mac) => string.Join(":", mac.Select(b => b.ToString("X2")));
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
-        
+        if (_disposed) return;
         _disposed = true;
-        
+
         try
         {
             _pipelineCts?.Cancel();
-            
             _deserializeBlock?.Complete();
             _securityBlock?.Complete();
             _processBlock?.Complete();
-            
-            // 完了を待機（最大5秒）
-            var completionTask = Task.WhenAll(
+
+            Task.WhenAll(
                 _deserializeBlock?.Completion ?? Task.CompletedTask,
                 _securityBlock?.Completion ?? Task.CompletedTask,
-                _processBlock?.Completion ?? Task.CompletedTask);
-            
-            completionTask.Wait(TimeSpan.FromSeconds(5));
+                _processBlock?.Completion ?? Task.CompletedTask
+            ).Wait(TimeSpan.FromSeconds(5));
         }
         catch (Exception ex)
         {
@@ -315,20 +261,26 @@ public class PacketProcessingPipeline : IDisposable
     }
 }
 
-/// <summary>
-/// パイプライン統計情報
-/// </summary>
-public class PipelineStatistics
+public sealed class PipelineStatistics
 {
     public long TotalPacketsProcessed { get; set; }
     public long TotalPacketsDropped { get; set; }
     public long TotalSecurityBlocks { get; set; }
+    public long TotalBytesProcessed { get; set; }
     public int DeserializeQueueCount { get; set; }
     public int SecurityQueueCount { get; set; }
     public int ProcessQueueCount { get; set; }
-
+    public TimeSpan Uptime { get; set; }
+    public DateTime StartTime { get; set; }
+    public double PacketsPerSecond { get; set; }
+    public double ThroughputMbps { get; set; }
     public double DropRate =>
         TotalPacketsProcessed + TotalPacketsDropped > 0
             ? (double)TotalPacketsDropped / (TotalPacketsProcessed + TotalPacketsDropped) * 100
             : 0;
+    public double SecurityBlockRate =>
+        TotalPacketsProcessed > 0
+            ? (double)TotalSecurityBlocks / TotalPacketsProcessed * 100
+            : 0;
+    public int TotalQueuedPackets => DeserializeQueueCount + SecurityQueueCount + ProcessQueueCount;
 }
