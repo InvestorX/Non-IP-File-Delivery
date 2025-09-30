@@ -14,6 +14,9 @@ public class LoggingService : ILoggingService, IDisposable
 {
     private ILogger _logger;
     private LogEventLevel _currentLevel = LogEventLevel.Warning;
+    private string? _currentFilePath;
+    private readonly object _reconfigureLock = new(); // 追加
+    private bool _disposed;
 
     public LoggingService()
     {
@@ -30,7 +33,10 @@ public class LoggingService : ILoggingService, IDisposable
     /// </summary>
     public void SetLogLevel(LogLevel level)
     {
-        _currentLevel = level switch
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(LoggingService));
+        
+        var newLevel = level switch
         {
             LogLevel.Debug => LogEventLevel.Debug,
             LogLevel.Info => LogEventLevel.Information,
@@ -39,8 +45,14 @@ public class LoggingService : ILoggingService, IDisposable
             _ => LogEventLevel.Warning
         };
 
-        // ロガーを再構成
-        ReconfigureLogger();
+        if (_currentLevel == newLevel)
+            return; // 変更なし
+        
+        lock (_reconfigureLock)
+        {
+            _currentLevel = newLevel;
+            ReconfigureLogger(_currentFilePath);
+        }
     }
 
     /// <summary>
@@ -48,15 +60,24 @@ public class LoggingService : ILoggingService, IDisposable
     /// </summary>
     public void SetLogToFile(string path)
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(LoggingService));
+        
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        // ロガーを再構成（ファイル出力追加）
-        ReconfigureLogger(path);
+        lock (_reconfigureLock)
+        {
+            _currentFilePath = path;
+            ReconfigureLogger(path);
+        }
     }
+
 
     /// <summary>
     /// Elasticsearchシンクを追加（新機能）
@@ -155,10 +176,12 @@ public class LoggingService : ILoggingService, IDisposable
     }
 
     /// <summary>
-    /// ロガーを再構成
+    /// ロガーを再構成（スレッドセーフ版）
     /// </summary>
     private void ReconfigureLogger(string? filePath = null)
     {
+        // lockで保護されているため、このメソッド内では排他制御不要
+        
         var config = new LoggerConfiguration()
             .MinimumLevel.Is(_currentLevel)
             .WriteTo.Console(
@@ -177,14 +200,36 @@ public class LoggingService : ILoggingService, IDisposable
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}");
         }
 
+        var oldLogger = _logger;
         _logger = config.CreateLogger();
+        
+        // 旧ロガーを安全に破棄
+        if (oldLogger is IDisposable disposable)
+        {
+            try
+            {
+                disposable.Dispose();
+            }
+            catch
+            {
+                // ロガーの破棄エラーは無視
+            }
+        }
     }
 
     public void Dispose()
     {
-        if (_logger is IDisposable disposable)
+        if (_disposed)
+            return;
+        
+        lock (_reconfigureLock)
         {
-            disposable.Dispose();
+            _disposed = true;
+            
+            if (_logger is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
         }
     }
 }
