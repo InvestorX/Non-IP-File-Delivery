@@ -1,82 +1,142 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
+using NonIPFileDelivery.Exceptions;
 
-namespace NonIPFileDelivery.Exceptions;
-
-/// <summary>
-/// 非IP送受信機システムの基底例外クラス
-/// </summary>
-public class TransceiverException : Exception
-{
-    public string ErrorCode { get; }
-    public DateTime OccurredAt { get; }
-
-    public TransceiverException(string errorCode, string message) 
-        : base(message)
-    {
-        ErrorCode = errorCode;
-        OccurredAt = DateTime.UtcNow;
-    }
-
-    public TransceiverException(string errorCode, string message, Exception innerException) 
-        : base(message, innerException)
-    {
-        ErrorCode = errorCode;
-        OccurredAt = DateTime.UtcNow;
-    }
-}
+namespace NonIPFileDelivery.Resilience;
 
 /// <summary>
-/// ネットワーク関連の例外
+/// 指数バックオフを使用したリトライポリシー
+/// 一時的なエラーに対して自動的にリトライを実行
 /// </summary>
-public class NetworkException : TransceiverException
+public class RetryPolicy
 {
-    public string? InterfaceName { get; }
+    private readonly ILoggingService _logger;
+    private readonly int _maxRetryAttempts;
+    private readonly int _initialDelayMs;
+    private readonly int _maxDelayMs;
+    private readonly Random _random = new();
 
-    public NetworkException(string message, string? interfaceName = null) 
-        : base("NET_ERROR", message)
+    public RetryPolicy(
+        ILoggingService logger,
+        int maxRetryAttempts = 3,
+        int initialDelayMs = 100,
+        int maxDelayMs = 5000)
     {
-        InterfaceName = interfaceName;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _maxRetryAttempts = maxRetryAttempts;
+        _initialDelayMs = initialDelayMs;
+        _maxDelayMs = maxDelayMs;
     }
 
-    public NetworkException(string message, Exception innerException, string? interfaceName = null) 
-        : base("NET_ERROR", message, innerException)
+    /// <summary>
+    /// リトライポリシーを適用して操作を実行
+    /// </summary>
+    /// <typeparam name="TResult">操作の戻り値の型</typeparam>
+    /// <param name="operation">実行する操作</param>
+    /// <param name="operationName">操作名（ログ記録用）</param>
+    /// <param name="ct">キャンセルトークン</param>
+    /// <returns>操作の結果</returns>
+    public async Task<TResult> ExecuteAsync<TResult>(
+        Func<Task<TResult>> operation,
+        string operationName,
+        CancellationToken ct = default)
     {
-        InterfaceName = interfaceName;
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationName);
+
+        int attempt = 0;
+        TimeSpan delay = TimeSpan.FromMilliseconds(InitialDelayMs);
+
+        Exception? lastException = null;
+
+        while (attempt < _maxRetryAttempts)
+        {
+            try
+            {
+                attempt++;
+                
+                if (attempt > 1)
+                {
+                    _logger.Debug($"Retry attempt {attempt}/{_maxRetryAttempts} for {operationName}");
+                }
+                
+                return await operation();
+            }
+            catch (Exception ex) when (attempt < _maxRetryAttempts && IsTransientError(ex))
+            {
+                lastException = ex;
+                
+                // 指数バックオフ + ジッター（ランダム性）
+                var baseDelay = Math.Min(
+                    _initialDelayMs * Math.Pow(2, attempt - 1),
+                    _maxDelayMs);
+                
+                // ±20%のランダムなジッターを追加（サンダリングハード問題を回避）
+                var jitter = baseDelay * 0.2 * (_random.NextDouble() * 2 - 1);
+                var delay = TimeSpan.FromMilliseconds(baseDelay + jitter);
+                
+                _logger.Warning(
+                     $"{operationName} failed (attempt {attempt}/{_maxRetryAttempts}), " +
+                    $"retrying after {delay.TotalMilliseconds:F0}ms. Error: {ex.Message}");
+
+                try
+                {
+                    await Task.Delay(delay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.Info($"{operationName} cancelled during retry delay");
+                    throw;
+                }
+            }
+            catch (Exception ex) when (!IsTransientError(ex))
+            {
+                // 非一時的エラーは即座に失敗
+                _logger.Error($"{operationName} failed with non-transient error on attempt {attempt}", ex);
+                throw;
+            }
+        }
+
+        // すべてのリトライが失敗
+        _logger.Error($"{operationName} failed after {_maxRetryAttempts} attempts", lastException);
+        
+        throw new InvalidOperationException(
+            $"Operation '{operationName}' failed after {_maxRetryAttempts} retry attempts. " +
+            $"See inner exception for details.",
+            lastException);
+        
     }
-}
 
-/// <summary>
-/// セキュリティ検閲関連の例外
-/// </summary>
-public class SecurityException : TransceiverException
-{
-    public string? ThreatName { get; }
-    public string? FileName { get; }
-
-    public SecurityException(string message, string? threatName = null, string? fileName = null) 
-        : base("SEC_ERROR", message)
+    /// <summary>
+    /// リトライポリシーを適用して操作を実行（戻り値なし）
+    /// </summary>
+    public async Task ExecuteAsync(
+        Func<Task> operation,
+        string operationName,
+        CancellationToken ct = default)
     {
-        ThreatName = threatName;
-        FileName = fileName;
-    }
-}
-
-/// <summary>
-/// フレーム処理関連の例外
-/// </summary>
-public class FrameException : TransceiverException
-{
-    public ushort? SequenceNumber { get; }
-
-    public FrameException(string message, ushort? sequenceNumber = null) 
-        : base("FRAME_ERROR", message)
-    {
-        SequenceNumber = sequenceNumber;
+        await ExecuteAsync(async () =>
+        {
+            await operation();
+            return true; // ダミーの戻り値
+        }, operationName, ct);
     }
 
-    public FrameException(string message, Exception innerException, ushort? sequenceNumber = null) 
-        : base("FRAME_ERROR", message, innerException)
-    {
-        SequenceNumber = sequenceNumber;
+    /// <summary>
+    /// エラーが一時的なものかどうかを判定
+    /// </summary>
+    /// <param name="ex">例外オブジェクト</param>
+    /// <returns>一時的なエラーの場合true</returns>
+    private bool IsTransientError(Exception ex)
+    {        
+        // 一時的なエラーのパターン
+        return ex is NetworkException ||
+               ex is TimeoutException ||
+               ex is IOException ||
+               ex is OperationCanceledException ||
+               (ex is TransceiverException te && 
+                (te.ErrorCode.StartsWith("NET_") || 
+                 te.ErrorCode == "TIMEOUT"));
     }
 }
