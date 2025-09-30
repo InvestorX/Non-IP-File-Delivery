@@ -27,11 +27,20 @@ public class PacketProcessingPipeline : IDisposable
     private long _totalPacketsDropped;
     private long _totalSecurityBlocks;
 
+    // リソース管理（追加）
+    private CancellationTokenSource? _pipelineCts;
+    private bool _disposed;
+
     public PacketProcessingPipeline(
+    // リソース管理（追加）
         ILoggingService logger,
+    private CancellationTokenSource? _pipelineCts;
         IFrameService frameService,
+    private bool _disposed;
         ISecurityService securityService)
+
     {
+
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _frameService = frameService ?? throw new ArgumentNullException(nameof(frameService));
         _securityService = securityService ?? throw new ArgumentNullException(nameof(securityService));
@@ -42,17 +51,32 @@ public class PacketProcessingPipeline : IDisposable
     /// </summary>
     public void Initialize()
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(PacketProcessingPipeline));
+        
+        _pipelineCts = new CancellationTokenSource();
+        
         var linkOptions = new DataflowLinkOptions { PropagateCompletion = true };
 
         // ステージ1: フレームのデシリアライズ（並列度: 4）
         _deserializeBlock = new TransformBlock<byte[], NonIPFrame?>(
             rawData =>
             {
+                if (_pipelineCts.Token.IsCancellationRequested)
+                    return null;
+                
                 try
                 {
                     using (_logger.BeginPerformanceScope("FrameDeserialization"))
                     {
-                        return _frameService.DeserializeFrame(rawData);
+                        var frame = _frameService.DeserializeFrame(rawData);
+                        
+                        if (frame == null)
+                        {
+                            Interlocked.Increment(ref _totalPacketsDropped);
+                        }
+                        
+                        return frame;
                     }
                 }
                 catch (Exception ex)
@@ -66,7 +90,8 @@ public class PacketProcessingPipeline : IDisposable
             {
                 MaxDegreeOfParallelism = 4,
                 BoundedCapacity = 1000, // バックプレッシャー制御
-                SingleProducerConstrained = false
+                SingleProducerConstrained = false,
+                CancellationToken = _pipelineCts.Token // 追加
             });
 
         // ステージ2: セキュリティ検閲（並列度: 2、CPU集約的）
@@ -102,7 +127,8 @@ public class PacketProcessingPipeline : IDisposable
             {
                 MaxDegreeOfParallelism = 2,
                 BoundedCapacity = 500,
-                SingleProducerConstrained = true // 前段から順次受信
+                SingleProducerConstrained = true, // 前段から順次受信
+                CancellationToken = _pipelineCts.Token // 追加
             });
 
         // ステージ3: フレーム処理（並列度: 1、順序保証）
@@ -150,7 +176,8 @@ public class PacketProcessingPipeline : IDisposable
             {
                 MaxDegreeOfParallelism = 1, // 順序保証のため
                 BoundedCapacity = 100,
-                SingleProducerConstrained = true
+                SingleProducerConstrained = true,                
+                CancellationToken = _pipelineCts.Token // 追加
             });
 
         // パイプライン接続
@@ -256,9 +283,35 @@ public class PacketProcessingPipeline : IDisposable
 
     public void Dispose()
     {
-        _deserializeBlock?.Complete();
-        _securityBlock?.Complete();
-        _processBlock?.Complete();
+        if (_disposed)
+            return;
+        
+        _disposed = true;
+        
+        try
+        {
+            _pipelineCts?.Cancel();
+            
+            _deserializeBlock?.Complete();
+            _securityBlock?.Complete();
+            _processBlock?.Complete();
+            
+            // 完了を待機（最大5秒）
+            var completionTask = Task.WhenAll(
+                _deserializeBlock?.Completion ?? Task.CompletedTask,
+                _securityBlock?.Completion ?? Task.CompletedTask,
+                _processBlock?.Completion ?? Task.CompletedTask);
+            
+            completionTask.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error("Error during pipeline disposal", ex);
+        }
+        finally
+        {
+            _pipelineCts?.Dispose();
+        }
     }
 }
 
