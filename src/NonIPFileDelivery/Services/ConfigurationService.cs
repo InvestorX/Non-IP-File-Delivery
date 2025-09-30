@@ -12,6 +12,146 @@ namespace NonIPFileDelivery.Services;
 public class ConfigurationService : IConfigurationService
 {
     private IConfiguration? _configuration;
+    private readonly SemaphoreSlim _loadLock = new(1, 1); // 追加
+
+    /// <summary>
+    /// 設定ファイルを非同期で読み込む（推奨）
+    /// </summary>
+    /// <param name="path">設定ファイルのパス</param>
+    /// <param name="cancellationToken">キャンセルトークン</param>
+    /// <returns>設定オブジェクト</returns>
+    public async Task<Configuration> LoadConfigurationAsync(
+        string path, 
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"Configuration file not found: {path}", path);
+        }
+        
+        await _loadLock.WaitAsync(cancellationToken);
+        
+        try
+        {
+            var extension = Path.GetExtension(path).ToLowerInvariant();
+            
+            return extension switch
+            {
+                ".ini" => await LoadFromIniAsync(path, cancellationToken),
+                ".json" => await LoadFromJsonAsync(path, cancellationToken),
+                _ => throw new NotSupportedException($"Unsupported configuration file format: {extension}")
+            };
+        }
+        finally
+        {
+            _loadLock.Release();
+        }
+    }
+
+        /// <summary>
+    /// INI形式の設定ファイルを非同期で読み込む
+    /// </summary>
+    private async Task<Configuration> LoadFromIniAsync(
+        string path, 
+        CancellationToken cancellationToken)
+    {
+        // ファイル存在確認を非同期で実行
+        await Task.Run(() =>
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"INI file not found: {path}");
+        }, cancellationToken);
+        
+        // ConfigurationBuilderは同期処理だが、別スレッドで実行
+        return await Task.Run(() => LoadFromIni(path), cancellationToken);
+    }
+
+    /// <summary>
+    /// JSON形式の設定ファイルを非同期で読み込む
+    /// </summary>
+    private async Task<Configuration> LoadFromJsonAsync(
+        string path, 
+        CancellationToken cancellationToken)
+    {
+        await Task.Run(() =>
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"JSON file not found: {path}");
+        }, cancellationToken);
+        
+        return await Task.Run(() => LoadFromJson(path), cancellationToken);
+    }
+
+    
+
+    /// <summary>
+    /// デフォルト設定ファイルを非同期で生成
+    /// </summary>
+    public async Task CreateDefaultConfigurationAsync(
+        string path, 
+        CancellationToken cancellationToken = default)
+    {
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        
+        if (extension == ".json")
+        {
+            await CreateDefaultJsonConfigurationAsync(path, cancellationToken);
+        }
+        else
+        {
+            await CreateDefaultIniConfigurationAsync(path, cancellationToken);
+        }
+    }
+
+    private async Task CreateDefaultIniConfigurationAsync(
+        string path, 
+        CancellationToken cancellationToken)
+    {
+        var defaultIni = @"[General]
+Mode=ActiveStandby
+LogLevel=Warning
+
+[Network]
+Interface=eth0
+FrameSize=9000
+Encryption=true
+EtherType=0x88B5
+
+[Security]
+EnableVirusScan=true
+ScanTimeout=5000
+QuarantinePath=C:\NonIP\Quarantine
+PolicyFile=security_policy.ini
+
+[Performance]
+MaxMemoryMB=8192
+BufferSize=65536
+ThreadPool=auto
+
+[Redundancy]
+HeartbeatInterval=1000
+FailoverTimeout=5000
+DataSyncMode=realtime
+";
+
+        await File.WriteAllTextAsync(path, defaultIni, System.Text.Encoding.UTF8, cancellationToken);
+    }
+
+    private async Task CreateDefaultJsonConfigurationAsync(
+        string path, 
+        CancellationToken cancellationToken)
+    {
+        var defaultConfig = new Configuration(); // デフォルト値が設定済み
+        
+        var json = System.Text.Json.JsonSerializer.Serialize(defaultConfig, new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+        
+        await File.WriteAllTextAsync(path, json, System.Text.Encoding.UTF8, cancellationToken);
+    }
 
     /// <summary>
     /// 設定ファイルを読み込む（形式を自動判定）
