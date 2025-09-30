@@ -1,48 +1,193 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using NonIPFileDelivery.Models;
 
 namespace NonIPFileDelivery.Services;
 
+/// <summary>
+/// 設定ファイル管理サービス（INIとJSON両対応）
+/// </summary>
 public class ConfigurationService : IConfigurationService
 {
-    public Configuration LoadConfiguration(string configPath)
+    private IConfiguration? _configuration;
+
+    /// <summary>
+    /// 設定ファイルを読み込む（形式を自動判定）
+    /// </summary>
+    /// <param name="path">設定ファイルのパス</param>
+    /// <returns>設定オブジェクト</returns>
+    public Configuration LoadConfiguration(string path)
     {
-        if (!File.Exists(configPath))
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        
+        return extension switch
         {
-            throw new FileNotFoundException($"Configuration file not found: {configPath}");
-        }
+            ".ini" => LoadFromIni(path),
+            ".json" => LoadFromJson(path),
+            _ => throw new NotSupportedException($"Unsupported configuration file format: {extension}")
+        };
+    }
 
-        var config = new Configuration();
-        var lines = File.ReadAllLines(configPath);
-        string? currentSection = null;
+     /// <summary>
+    /// INI形式の設定ファイルを読み込む（既存機能）
+    /// </summary>
+    private Configuration LoadFromIni(string path)
+    {
+        var builder = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddIniFile(path, optional: false, reloadOnChange: true);
 
-        foreach (var line in lines)
+        _configuration = builder.Build();
+
+        // INI形式から設定オブジェクトにマッピング
+        var config = new Configuration
         {
-            var trimmedLine = line.Trim();
-            if (string.IsNullOrEmpty(trimmedLine) || trimmedLine.StartsWith('#'))
-                continue;
-
-            // Section header
-            if (trimmedLine.StartsWith('[') && trimmedLine.EndsWith(']'))
+            General = new GeneralConfig
             {
-                currentSection = trimmedLine[1..^1];
-                continue;
-            }
-
-            // Key-value pair
-            var equalIndex = trimmedLine.IndexOf('=');
-            if (equalIndex > 0)
+                Mode = _configuration["General:Mode"] ?? "ActiveStandby",
+                LogLevel = _configuration["General:LogLevel"] ?? "Warning"
+            },
+            Network = new NetworkConfig
             {
-                var key = trimmedLine[..equalIndex].Trim();
-                var value = trimmedLine[(equalIndex + 1)..].Split('#')[0].Trim();
-
-                SetConfigValue(config, currentSection, key, value);
+                Interface = _configuration["Network:Interface"] ?? "eth0",
+                FrameSize = int.TryParse(_configuration["Network:FrameSize"], out var frameSize) ? frameSize : 9000,
+                Encryption = bool.TryParse(_configuration["Network:Encryption"], out var encryption) && encryption,
+                EtherType = _configuration["Network:EtherType"] ?? "0x88B5"
+            },
+            Security = new SecurityConfig
+            {
+                EnableVirusScan = bool.TryParse(_configuration["Security:EnableVirusScan"], out var enableScan) && enableScan,
+                ScanTimeout = int.TryParse(_configuration["Security:ScanTimeout"], out var timeout) ? timeout : 5000,
+                QuarantinePath = _configuration["Security:QuarantinePath"] ?? "C:\\NonIP\\Quarantine",
+                PolicyFile = _configuration["Security:PolicyFile"] ?? "security_policy.ini"
+            },
+            Performance = new PerformanceConfig
+            {
+                MaxMemoryMB = int.TryParse(_configuration["Performance:MaxMemoryMB"], out var maxMem) ? maxMem : 8192,
+                BufferSize = int.TryParse(_configuration["Performance:BufferSize"], out var bufSize) ? bufSize : 65536,
+                ThreadPool = _configuration["Performance:ThreadPool"] ?? "auto"
+            },
+            Redundancy = new RedundancyConfig
+            {
+                HeartbeatInterval = int.TryParse(_configuration["Redundancy:HeartbeatInterval"], out var hbInterval) ? hbInterval : 1000,
+                FailoverTimeout = int.TryParse(_configuration["Redundancy:FailoverTimeout"], out var foTimeout) ? foTimeout : 5000,
+                DataSyncMode = _configuration["Redundancy:DataSyncMode"] ?? "realtime"
             }
-        }
+        };
 
         return config;
+    }
+
+    /// <summary>
+    /// JSON形式の設定ファイルを読み込む（新機能）
+    /// </summary>
+    private Configuration LoadFromJson(string path)
+    {
+        var builder = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile(path, optional: false, reloadOnChange: true);
+
+        _configuration = builder.Build();
+
+        // JSON形式から設定オブジェクトにバインド
+        var config = new Configuration();
+        _configuration.Bind(config);
+
+        return config;
+    }
+
+    /// <summary>
+    /// デフォルトINI設定ファイルを生成（既存機能）
+    /// </summary>
+    public void CreateDefaultConfiguration(string path)
+    {
+        var defaultIni = @"[General]
+Mode=ActiveStandby
+LogLevel=Warning
+
+[Network]
+Interface=eth0
+FrameSize=9000
+Encryption=true
+EtherType=0x88B5
+
+[Security]
+EnableVirusScan=true
+ScanTimeout=5000
+QuarantinePath=C:\NonIP\Quarantine
+PolicyFile=security_policy.ini
+
+[Performance]
+MaxMemoryMB=8192
+BufferSize=65536
+ThreadPool=auto
+
+[Redundancy]
+HeartbeatInterval=1000
+FailoverTimeout=5000
+DataSyncMode=realtime
+";
+
+        File.WriteAllText(path, defaultIni, Encoding.UTF8);
+    }
+
+    /// <summary>
+    /// デフォルトJSON設定ファイルを生成（新機能）
+    /// </summary>
+    public void CreateDefaultJsonConfiguration(string path)
+    {
+        var defaultJson = @"{
+  ""General"": {
+    ""Mode"": ""ActiveStandby"",
+    ""LogLevel"": ""Warning""
+  },
+  ""Network"": {
+    ""Interface"": ""eth0"",
+    ""FrameSize"": 9000,
+    ""Encryption"": true,
+    ""EtherType"": ""0x88B5""
+  },
+  ""Security"": {
+    ""EnableVirusScan"": true,
+    ""ScanTimeout"": 5000,
+    ""QuarantinePath"": ""C:\\NonIP\\Quarantine"",
+    ""PolicyFile"": ""security_policy.ini""
+  },
+  ""Performance"": {
+    ""MaxMemoryMB"": 8192,
+    ""BufferSize"": 65536,
+    ""ThreadPool"": ""auto""
+  },
+  ""Redundancy"": {
+    ""HeartbeatInterval"": 1000,
+    ""FailoverTimeout"": 5000,
+    ""DataSyncMode"": ""realtime""
+  }
+}";
+
+        File.WriteAllText(path, defaultJson, Encoding.UTF8);
+    }
+
+    /// <summary>
+    /// INI設定をJSON形式に変換（移行ツール）
+    /// </summary>
+    /// <param name="iniPath">変換元のINIファイルパス</param>
+    /// <param name="jsonPath">変換先のJSONファイルパス</param>
+    public async Task ConvertIniToJsonAsync(string iniPath, string jsonPath)
+    {
+        // INIファイルを読み込む
+        var config = LoadFromIni(iniPath);
+
+        // JSON形式でシリアライズ
+        var json = System.Text.Json.JsonSerializer.Serialize(config, new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+
+        // JSONファイルに書き込む
+        await File.WriteAllTextAsync(jsonPath, json, Encoding.UTF8);
     }
 
     public void SaveConfiguration(Configuration config, string configPath)
