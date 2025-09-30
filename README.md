@@ -18,6 +18,267 @@ Non-IP File Deliveryは、IP系プロトコルを使用しないセキュアな�
       PostgreSQL)                            FTP/SFTPサーバ)
 ```
 
+#### 全体システム構成
+
+```mermaid
+graph TB
+    subgraph "Windows端末A"
+        A1[FTPクライアント<br/>FileZilla/WinSCP]
+        A2[PostgreSQLクライアント<br/>pgAdmin/psql]
+        A3[その他アプリケーション]
+    end
+    
+    subgraph "非IP送受信機A"
+        B1[IPキャプチャモジュール]
+        B2[プロトコル解析エンジン]
+        B3[セキュリティ検閲エンジン]
+        B4[暗号化モジュール]
+        B5[Raw Ethernet送信モジュール]
+        B6[ログ記録モジュール]
+        B7[設定管理モジュール]
+        
+        B1 --> B2
+        B2 --> B3
+        B3 --> B4
+        B4 --> B5
+        B3 --> B6
+        B7 -.-> B2
+        B7 -.-> B3
+    end
+    
+    subgraph "非IP送受信機B"
+        C1[Raw Ethernet受信モジュール]
+        C2[復号化モジュール]
+        C3[セキュリティ検閲エンジン]
+        C4[プロトコル再構築エンジン]
+        C5[IP送信モジュール]
+        C6[ログ記録モジュール]
+        C7[設定管理モジュール]
+        
+        C1 --> C2
+        C2 --> C3
+        C3 --> C4
+        C4 --> C5
+        C3 --> C6
+        C7 -.-> C3
+        C7 -.-> C4
+    end
+    
+    subgraph "Windows端末B"
+        D1[FTP/SFTPサーバ]
+        D2[PostgreSQLサーバ]
+        D3[その他サービス]
+    end
+    
+    subgraph "管理・監視システム"
+        E1[監視ダッシュボード<br/>ASP.NET Core Web UI]
+        E2[ログ集約サーバ<br/>Elasticsearch/Seq]
+        E3[設定管理UI<br/>REST API]
+    end
+    
+    A1 -->|TCP/IP<br/>FTP| B1
+    A2 -->|TCP/IP<br/>PostgreSQL| B1
+    A3 -->|TCP/IP<br/>その他| B1
+    
+    B5 -->|Raw Ethernet<br/>暗号化フレーム| C1
+    
+    C5 -->|TCP/IP<br/>FTP| D1
+    C5 -->|TCP/IP<br/>PostgreSQL| D2
+    C5 -->|TCP/IP<br/>その他| D3
+    
+    B6 -->|ログ送信| E2
+    C6 -->|ログ送信| E2
+    E2 --> E1
+    E3 -->|設定配信| B7
+    E3 -->|設定配信| C7
+```
+
+#### コンポーネント詳細
+```mermaid
+graph LR
+    subgraph "非IP送受信機 コアアーキテクチャ"
+        A[PacketCaptureService]
+        B[ProtocolAnalyzer]
+        C[SecurityInspector]
+        D[CryptoEngine]
+        E[RawEthernetTransport]
+        F[LoggingService]
+        G[ConfigurationManager]
+        
+        A -->|RawPacket| B
+        B -->|ParsedProtocol| C
+        C -->|InspectionResult| D
+        D -->|EncryptedFrame| E
+        C -->|SecurityEvent| F
+        G -->|Config| B
+        G -->|Policy| C
+    end
+    
+    subgraph "検閲エンジン 内部構造"
+        C1[SignatureScanner<br/>YARA Rules]
+        C2[BehaviorAnalyzer<br/>異常検知]
+        C3[ProtocolValidator<br/>RFC準拠チェック]
+        C4[PolicyEngine<br/>ルールベース制御]
+        
+        C --> C1
+        C --> C2
+        C --> C3
+        C --> C4
+    end
+```
+
+#### FTPファイル転送のデータフロー（正常系）
+```mermaid
+sequenceDiagram
+    participant FTPClient as FTPクライアント<br/>(Windows端末A)
+    participant ProxyA as 非IP送受信機A
+    participant ProxyB as 非IP送受信機B
+    participant FTPServer as FTPサーバ<br/>(Windows端末B)
+    
+    FTPClient->>ProxyA: 1. FTP接続要求<br/>(TCP SYN to port 21)
+    activate ProxyA
+    ProxyA->>ProxyA: 2. パケットキャプチャ<br/>(SharpPcap)
+    ProxyA->>ProxyA: 3. プロトコル解析<br/>(FTP判定)
+    ProxyA->>ProxyA: 4. セキュリティ検閲<br/>(未実施 - 接続段階)
+    ProxyA->>ProxyA: 5. 暗号化<br/>(AES-256-GCM)
+    ProxyA->>ProxyB: 6. Raw Ethernet送信<br/>(カスタムEtherType: 0x88B5)
+    deactivate ProxyA
+    
+    activate ProxyB
+    ProxyB->>ProxyB: 7. Raw Ethernet受信
+    ProxyB->>ProxyB: 8. 復号化
+    ProxyB->>ProxyB: 9. プロトコル再構築
+    ProxyB->>FTPServer: 10. TCP接続転送<br/>(SYN to port 21)
+    deactivate ProxyB
+    
+    FTPServer->>ProxyB: 11. SYN-ACK
+    activate ProxyB
+    ProxyB->>ProxyB: 12. 暗号化
+    ProxyB->>ProxyA: 13. Raw Ethernet送信
+    deactivate ProxyB
+    
+    activate ProxyA
+    ProxyA->>ProxyA: 14. 復号化
+    ProxyA->>FTPClient: 15. SYN-ACK転送
+    deactivate ProxyA
+    
+    Note over FTPClient,FTPServer: 3-Way Handshake完了
+    
+    FTPClient->>ProxyA: 16. FTP USER command
+    activate ProxyA
+    ProxyA->>ProxyA: 17. 検閲: コマンド検証
+    ProxyA->>ProxyB: 18. 暗号化送信
+    deactivate ProxyA
+    ProxyB->>FTPServer: 19. USER command転送
+    
+    FTPClient->>ProxyA: 20. FTP RETR command<br/>(ファイル取得)
+    activate ProxyA
+    ProxyA->>ProxyA: 21. 検閲: ファイル名検証
+    ProxyA->>ProxyB: 22. 暗号化送信
+    deactivate ProxyA
+    
+    FTPServer->>ProxyB: 23. ファイルデータ送信開始
+    activate ProxyB
+    ProxyB->>ProxyB: 24. セキュリティ検閲<br/>(マルウェアスキャン)
+    ProxyB->>ProxyB: 25. ログ記録<br/>(ファイル名、サイズ、ハッシュ)
+    ProxyB->>ProxyA: 26. 暗号化送信<br/>(チャンク単位)
+    deactivate ProxyB
+    
+    activate ProxyA
+    ProxyA->>FTPClient: 27. ファイルデータ転送
+    deactivate ProxyA
+    
+    Note over ProxyA,ProxyB: 全ての通信をログに記録
+```
+
+#### PostgreSQL接続のデータフロー
+```mermaid
+sequenceDiagram
+    participant PGClient as PostgreSQLクライアント<br/>(Windows端末A)
+    participant ProxyA as 非IP送受信機A
+    participant ProxyB as 非IP送受信機B
+    participant PGServer as PostgreSQLサーバ<br/>(Windows端末B)
+    
+    PGClient->>ProxyA: 1. PostgreSQL接続<br/>(TCP to port 5432)
+    activate ProxyA
+    ProxyA->>ProxyA: 2. プロトコル解析<br/>(PostgreSQL判定)
+    ProxyA->>ProxyB: 3. 暗号化送信
+    deactivate ProxyA
+    ProxyB->>PGServer: 4. 接続転送
+    
+    PGServer->>ProxyB: 5. 認証要求
+    ProxyB->>ProxyA: 6. 暗号化送信
+    ProxyA->>PGClient: 7. 認証要求転送
+    
+    PGClient->>ProxyA: 8. 認証情報
+    activate ProxyA
+    ProxyA->>ProxyA: 9. 検閲: 認証情報ログ
+    ProxyA->>ProxyB: 10. 暗号化送信
+    deactivate ProxyA
+    ProxyB->>PGServer: 11. 認証情報転送
+    
+    Note over PGClient,PGServer: 認証完了
+    
+    PGClient->>ProxyA: 12. SQL Query<br/>(e.g., SELECT * FROM users)
+    activate ProxyA
+    ProxyA->>ProxyA: 13. SQL検閲<br/>(SQLインジェクション検出)
+    ProxyA->>ProxyA: 14. ログ記録<br/>(SQL文、実行ユーザー)
+    ProxyA->>ProxyB: 15. 暗号化送信
+    deactivate ProxyA
+    
+    ProxyB->>PGServer: 16. SQL Query転送
+    
+    PGServer->>ProxyB: 17. クエリ結果
+    activate ProxyB
+    ProxyB->>ProxyB: 18. 結果検閲<br/>(データ漏洩検知)
+    ProxyB->>ProxyA: 19. 暗号化送信
+    deactivate ProxyB
+    
+    ProxyA->>PGClient: 20. クエリ結果転送
+```
+
+#### セキュリティ検閲の内部フロー
+```mermaid
+flowchart TD
+    A[パケット/ファイル受信] --> B{プロトコル種別判定}
+    
+    B -->|FTP| C[FTP検閲パイプライン]
+    B -->|SFTP| D[SFTP検閲パイプライン]
+    B -->|PostgreSQL| E[PostgreSQL検閲パイプライン]
+    B -->|その他| F[汎用検閲パイプライン]
+    
+    C --> G[コマンド検証]
+    C --> H[ファイル名検証]
+    C --> I[ファイル内容スキャン]
+    
+    D --> J[SSH暗号化解除]
+    J --> H
+    J --> I
+    
+    E --> K[SQL構文解析]
+    E --> L[SQLインジェクション検出]
+    E --> M[機密データ検出]
+    
+    F --> N[汎用パターンマッチング]
+    
+    I --> O{YARAスキャン}
+    O -->|マルウェア検出| P[通信遮断]
+    O -->|クリーン| Q[転送許可]
+    
+    K --> R{危険なSQL?}
+    R -->|DROP/DELETE without WHERE| P
+    R -->|安全| Q
+    
+    P --> S[アラートログ記録]
+    P --> T[管理者通知]
+    
+    Q --> U[通常ログ記録]
+    Q --> V[次のステージへ転送]
+    
+    style P fill:#f99
+    style Q fill:#9f9
+```
+
 ## 🎯 主な機能
 
 ### コア機能
