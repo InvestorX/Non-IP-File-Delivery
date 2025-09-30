@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using NonIPFileDelivery.Models;
+using NonIPFileDelivery.Utilities;
 
 namespace NonIPFileDelivery.Services;
 
@@ -10,6 +11,7 @@ public class FrameService : IFrameService
 {
     private readonly ILoggingService _logger;
     private ushort _sequenceNumber = 0;
+    private readonly object _sequenceLock = new();
 
     public FrameService(ILoggingService logger)
     {
@@ -23,12 +25,12 @@ public class FrameService : IFrameService
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
 
-            // Write Ethernet header
+            // Ethernetヘッダー書き込み
             writer.Write(frame.Header.DestinationMac);
             writer.Write(frame.Header.SourceMac);
             writer.Write(frame.Header.EtherType);
 
-            // Write custom protocol header
+            // カスタムプロトコルヘッダー書き込み
             writer.Write((byte)frame.Header.Type);
             writer.Write(frame.Header.SequenceNumber);
             writer.Write(frame.Header.PayloadLength);
@@ -40,9 +42,9 @@ public class FrameService : IFrameService
                 writer.Write(frame.Payload);
             }
 
-            // Calculate and write checksum
+            // CRC32チェックサム計算と書き込み（改善点）
             var frameData = stream.ToArray();
-            var checksum = CalculateChecksum(frameData);
+            var checksum = Crc32Calculator.Calculate(frameData);
             writer.Write(checksum);
 
             var finalData = stream.ToArray();
@@ -57,6 +59,9 @@ public class FrameService : IFrameService
         }
     }
 
+    /// <summary>
+    /// バイト配列からフレームをデシリアライズ
+    /// </summary>
     public NonIPFrame? DeserializeFrame(byte[] data)
     {
         try
@@ -101,14 +106,14 @@ public class FrameService : IFrameService
             // Read checksum
             frame.Checksum = reader.ReadUInt32();
 
-            // Validate checksum
+             // CRC32チェックサム検証（改善点）
             var frameDataWithoutChecksum = new byte[data.Length - 4];
             Array.Copy(data, 0, frameDataWithoutChecksum, 0, frameDataWithoutChecksum.Length);
-            var calculatedChecksum = CalculateChecksum(frameDataWithoutChecksum);
+            var calculatedChecksum = Crc32Calculator.Calculate(frameDataWithoutChecksum);
 
-            if (calculatedChecksum != frame.Checksum)
+           if (calculatedChecksum != frame.Checksum)
             {
-                _logger.Warning($"Checksum mismatch: calculated=0x{calculatedChecksum:X8}, received=0x{frame.Checksum:X8}");
+                _logger.Warning($"CRC32 mismatch: calculated=0x{calculatedChecksum:X8}, received=0x{frame.Checksum:X8}");
                 return null;
             }
 
@@ -121,7 +126,10 @@ public class FrameService : IFrameService
             return null;
         }
     }
-
+    
+    /// <summary>
+    /// ハートビートフレーム作成
+    /// </summary>
     public NonIPFrame CreateHeartbeatFrame(byte[] sourceMac)
     {
         var frame = new NonIPFrame
@@ -139,7 +147,7 @@ public class FrameService : IFrameService
         var heartbeatData = JsonSerializer.Serialize(new
         {
             Timestamp = DateTime.UtcNow,
-            Version = "1.0.0",
+            Version = "1.1.0",
             Status = "Active"
         });
 
@@ -149,6 +157,9 @@ public class FrameService : IFrameService
         return frame;
     }
 
+    /// <summary>
+    /// データフレーム作成
+    /// </summary>
     public NonIPFrame CreateDataFrame(byte[] sourceMac, byte[] destinationMac, byte[] data, FrameFlags flags = FrameFlags.None)
     {
         var frame = new NonIPFrame
@@ -168,6 +179,9 @@ public class FrameService : IFrameService
         return frame;
     }
 
+    /// <summary>
+    /// ファイル転送フレーム作成
+    /// </summary>
     public NonIPFrame CreateFileTransferFrame(byte[] sourceMac, byte[] destinationMac, FileTransferFrame fileData)
     {
         var frame = new NonIPFrame
@@ -189,21 +203,24 @@ public class FrameService : IFrameService
         return frame;
     }
 
+    /// <summary>
+    /// フレーム検証（CRC32チェックサム含む）
+    /// </summary>
     public bool ValidateFrame(NonIPFrame frame, byte[] rawData)
     {
         try
         {
-            // Basic validation
+            // 基本検証
             if (frame.Header.EtherType != 0x88B5)
                 return false;
 
             if (frame.Header.PayloadLength != frame.Payload.Length)
                 return false;
 
-            // Checksum validation
+            // CRC32チェックサム検証（改善点）
             var frameDataWithoutChecksum = new byte[rawData.Length - 4];
             Array.Copy(rawData, 0, frameDataWithoutChecksum, 0, frameDataWithoutChecksum.Length);
-            var calculatedChecksum = CalculateChecksum(frameDataWithoutChecksum);
+            var calculatedChecksum = Crc32Calculator.Calculate(frameDataWithoutChecksum);
 
             return calculatedChecksum == frame.Checksum;
         }
@@ -214,24 +231,45 @@ public class FrameService : IFrameService
         }
     }
 
+    // public uint CalculateChecksum(byte[] data)
+    // {
+    //     uint checksum = 0;
+        
+    //     for (int i = 0; i < data.Length; i += 4)
+    //     {
+    //         uint value = 0;
+    //         for (int j = 0; j < 4 && i + j < data.Length; j++)
+    //         {
+    //             value |= (uint)(data[i + j] << (j * 8));
+    //         }
+    //         checksum ^= value;
+    //     }
+
+    //     // Simple hash mixing to improve distribution
+    //     checksum ^= (checksum >> 16);
+    //     checksum ^= (checksum >> 8);
+        
+    //     return checksum;
+    // }
+
+    /// <summary>
+    /// スレッドセーフなシーケンス番号取得
+    /// </summary>
+    private ushort GetNextSequenceNumber()
+    {
+        lock (_sequenceLock)
+        {
+            return ++_sequenceNumber;
+        }
+    }
+
+    /// <summary>
+    /// CRC32チェックサム計算（互換性のため残す）
+    /// </summary>
+    [Obsolete("Use Crc32Calculator.Calculate instead")]
     public uint CalculateChecksum(byte[] data)
     {
-        uint checksum = 0;
-        
-        for (int i = 0; i < data.Length; i += 4)
-        {
-            uint value = 0;
-            for (int j = 0; j < 4 && i + j < data.Length; j++)
-            {
-                value |= (uint)(data[i + j] << (j * 8));
-            }
-            checksum ^= value;
-        }
-
-        // Simple hash mixing to improve distribution
-        checksum ^= (checksum >> 16);
-        checksum ^= (checksum >> 8);
-        
-        return checksum;
+        return Crc32Calculator.Calculate(data);
     }
+    
 }
