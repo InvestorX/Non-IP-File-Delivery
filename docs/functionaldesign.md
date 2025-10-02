@@ -1,37 +1,59 @@
-# 非IP送受信機システム 基本設計書 (Functional Design Document)
+# Non-IP File Delivery システム 基本設計書 (Functional Design Document)
 
-## ドキュメント情報
+**バージョン**: 2.0 (既存実装反映版)  
+**作成日**: 2025-10-02  
+**最終更新**: 2025-10-02  
+**作成者**: InvestorX  
+**ステータス**: Stage 3.5完了（既存コード分析済み）
 
-| 項目 | 内容 |
+---
+
+## 📋 目次
+
+1. [ドキュメント情報](#1-ドキュメント情報)
+2. [システムアーキテクチャ](#2-システムアーキテクチャ)
+3. [プロジェクト構造](#3-プロジェクト構造)
+4. [技術スタック](#4-技術スタック)
+5. [データフロー](#5-データフロー)
+6. [Custom Ethernet Frame仕様](#6-custom-ethernet-frame仕様)
+7. [モジュール設計](#7-モジュール設計)
+8. [設定ファイル仕様](#8-設定ファイル仕様)
+9. [性能設計](#9-性能設計)
+10. [既存実装の評価](#10-既存実装の評価)
+11. [実装ギャップと追加実装計画](#11-実装ギャップと追加実装計画)
+
+---
+
+## 1. ドキュメント情報
+
+### 1.1 概要
+
+本ドキュメントは、Non-IP File Delivery システムの基本設計を記述したものです。
+**既存実装（v1.1.0）** の詳細分析結果を反映し、Stage 2（基本設計）とStage 3.5（既存コード分析）の成果をまとめています。
+
+### 1.2 参照ドキュメント
+
+| ドキュメント | 場所 | 説明 |
+|------------|------|------|
+| README.md | ルートディレクトリ | システム概要、使用方法 |
+| requirements.md | ルートディレクトリ | 要件定義書 |
+| config.ini | ルートディレクトリ | 基本設定ファイル（サンプル） |
+| security_policy.ini | ルートディレクトリ | セキュリティポリシー（サンプル） |
+
+### 1.3 用語定義
+
+| 用語 | 説明 |
 |------|------|
-| プロジェクト名 | Non-IP File Delivery |
-| ドキュメントバージョン | 2.0（既存実装統合版） |
-| 作成日 | 2025-10-02 |
-| 最終更新日 | 2025-10-02 |
-| 作成者 | InvestorX |
-| リポジトリ | https://github.com/InvestorX/Non-IP-File-Delivery |
-| 関連ドキュメント | requirements.md, README.md |
-| ステータス | Stage 3.5完了（既存コード分析済み） |
+| **非IP送受信機** | Raw Ethernetで独自プロトコル通信を行うシステム |
+| **カスタムフレーム** | EtherType 0x88B5 を使用した独自Ethernetフレーム |
+| **TPL Dataflow** | Task Parallel Library Dataflow（並列処理パイプライン） |
+| **CRC32** | Cyclic Redundancy Check 32-bit（巡回冗長検査） |
 
 ---
 
-## 目次
+## 2. システムアーキテクチャ
 
-1. [システムアーキテクチャ](#1-システムアーキテクチャ)
-2. [既存実装の構造](#2-既存実装の構造)
-3. [技術スタック](#3-技術スタック)
-4. [データフロー](#4-データフロー)
-5. [Custom Ethernet Frame仕様](#5-custom-ethernet-frame仕様)
-6. [モジュール設計](#6-モジュール設計)
-7. [設定ファイル仕様](#7-設定ファイル仕様)
-8. [性能設計](#8-性能設計)
-9. [実装ギャップ分析](#9-実装ギャップ分析)
-
----
-
-## 1. システムアーキテクチャ
-
-### 1.1 全体システム構成（README.md準拠）
+### 2.1 全体システム構成（README.md準拠）
 
 ```mermaid
 graph TB
@@ -106,7 +128,7 @@ graph TB
     E3 -->|設定配信| C7
 ```
 
-### 1.2 コンポーネント詳細（README.md準拠）
+### 2.2 コンポーネント詳細（README.md準拠）
 
 ```mermaid
 graph LR
@@ -141,88 +163,126 @@ graph LR
     end
 ```
 
+### 2.3 既存実装のコンポーネントマッピング
+
+| README.mdコンポーネント | 既存実装クラス | ファイル | 実装状況 |
+|----------------------|--------------|---------|---------|
+| **IPキャプチャモジュール** | NetworkService | `Services/NetworkService.cs` | ✅ 実装済み |
+| **プロトコル解析エンジン** | （未実装） | - | 🔴 要追加 |
+| **セキュリティ検閲エンジン** | SecurityService | `Services/SecurityService.cs` | 🟡 モック実装 |
+| **暗号化モジュール** | （未実装） | - | 🔴 要追加 |
+| **Raw Ethernet送信モジュール** | NetworkService, FrameService | `Services/NetworkService.cs`<br/>`Services/FrameService.cs` | ✅ 実装済み |
+| **ログ記録モジュール** | LoggingService | `Services/LoggingService.cs` | ✅ 実装済み |
+| **設定管理モジュール** | ConfigurationService | `Services/ConfigurationService.cs` | ✅ 実装済み |
+
 ---
 
-## 2. 既存実装の構造
+## 3. プロジェクト構造
 
-### 2.1 プロジェクト構成
+### 3.1 既存のプロジェクト構造
 
 ```
-NonIPFileDelivery/
-├── src/
-│   └── NonIPFileDelivery/               ← メインプロジェクト（単一構成）
-│       ├── Exceptions/                  ← カスタム例外
-│       ├── Models/                      ← データモデル
-│       │   ├── Configuration.cs         ← 設定モデル
-│       │   ├── FrameProtocol.cs         ← フレーム定義
-│       │   ├── ScanResult.cs            ← スキャン結果
-│       │   └── LogLevel.cs              ← ログレベル
-│       ├── Resilience/                  ← リトライポリシー
-│       ├── Services/                    ← 主要サービス群
-│       │   ├── ConfigurationService.cs  ← 設定ファイル管理
-│       │   ├── FrameService.cs          ← フレーム処理
-│       │   ├── LoggingService.cs        ← ログ機能
-│       │   ├── NetworkService.cs        ← ネットワーク通信
-│       │   ├── SecurityService.cs       ← セキュリティ検閲
-│       │   ├── NonIPFileDeliveryService.cs ← メインサービス
-│       │   └── PacketProcessingPipeline.cs ← パイプライン処理
-│       ├── Utilities/                   ← ユーティリティ
-│       ├── Program.cs                   ← エントリーポイント
-│       └── NonIPFileDelivery.csproj     ← プロジェクトファイル
-├── config.ini                           ← 基本設定
-├── security_policy.ini                  ← セキュリティポリシー
+InvestorX/Non-IP-File-Delivery/
+├── .gitignore
+├── LICENSE (Sushi-Ware License)
+├── NonIPFileDelivery.sln          ← Visual Studio ソリューション
 ├── README.md
-└── requirements.md
+├── requirements.md
+├── config.ini                      ← 基本設定ファイル
+├── security_policy.ini             ← セキュリティポリシー
+│
+├── docs/                           ← ドキュメントディレクトリ
+│   └── functionaldesign.md         ← 本ドキュメント
+│
+└── src/
+    ├── NonIPFileDelivery/          ← メインプロジェクト（既存）
+    │   ├── Exceptions/             ← カスタム例外
+    │   ├── Models/                 ← データモデル
+    │   │   ├── Configuration.cs    ← 設定モデル
+    │   │   ├── FrameProtocol.cs    ← フレーム構造
+    │   │   ├── LogLevel.cs
+    │   │   └── ScanResult.cs
+    │   ├── Resilience/             ← リトライポリシー
+    │   │   └── RetryPolicy.cs
+    │   ├── Services/               ← サービスクラス群
+    │   │   ├── IConfigurationService.cs
+    │   │   ├── IFrameService.cs
+    │   │   ├── ILoggingService.cs
+    │   │   ├── INetworkService.cs
+    │   │   ├── ISecurityService.cs
+    │   │   ├── ConfigurationService.cs      (7.8KB)
+    │   │   ├── FrameService.cs              (6.8KB)
+    │   │   ├── LoggingService.cs            (6.6KB)
+    │   │   ├── NetworkService.cs            (12KB)
+    │   │   ├── SecurityService.cs           (6.4KB)
+    │   │   ├── NonIPFileDeliveryService.cs  (13.8KB)
+    │   │   └── PacketProcessingPipeline.cs  (11.2KB)
+    │   ├── Utilities/              ← ユーティリティ
+    │   │   └── Crc32Calculator.cs  （推測）
+    │   ├── Program.cs              ← メインエントリポイント (10.7KB)
+    │   └── NonIPFileDelivery.csproj
+    │
+    ├── NonIPConfigTool/            ← WPF設定ツール（既存ディレクトリ）
+    ├── NonIPWebConfig/             ← Web設定ツール（既存ディレクトリ）
+    ├── NonIPPerformanceTest/       ← 性能テストツール（既存ディレクトリ）
+    └── NonIPLoadTest/              ← 負荷テストツール（既存ディレクトリ）
 ```
 
-### 2.2 主要クラスの実装状況
+### 3.2 プロジェクト依存関係
 
-| カテゴリ | クラス名 | 実装状況 | サイズ | 評価 |
-|---------|---------|---------|-------|------|
-| **基盤** | Program.cs | ✅ 完了 | 274行 | ⭐⭐⭐⭐⭐ |
-| **設定** | ConfigurationService | ✅ 完了 | 7.8KB | ⭐⭐⭐⭐⭐ |
-| **フレーム** | FrameService | ✅ 完了 | 6.8KB | ⭐⭐⭐⭐ |
-| **ログ** | LoggingService | ✅ 完了 | 6.6KB | ⭐⭐⭐⭐⭐ |
-| **ネットワーク** | NetworkService | ✅ 完了 | 12.0KB | 要確認 |
-| **セキュリティ** | SecurityService | ⚠️ モック | 6.4KB | 🔴 要実装 |
-| **サービス** | NonIPFileDeliveryService | ✅ 完了 | 13.8KB | 要確認 |
-| **パイプライン** | PacketProcessingPipeline | ✅ 完了 | 11.2KB | ⭐⭐⭐⭐⭐ |
+```mermaid
+graph TD
+    A[NonIPFileDelivery<br/>メインプロジェクト]
+    
+    B[NonIPConfigTool<br/>WPF]
+    C[NonIPWebConfig<br/>ASP.NET Core]
+    D[NonIPPerformanceTest<br/>性能テスト]
+    E[NonIPLoadTest<br/>負荷テスト]
+    
+    B -.->|参照（予定）| A
+    C -.->|参照（予定）| A
+    D -.->|参照（予定）| A
+    E -.->|参照（予定）| A
+    
+    style A fill:#99ccff,stroke:#0066cc,stroke-width:3px
+```
 
 ---
 
-## 3. 技術スタック
+## 4. 技術スタック
 
-### 3.1 開発環境（既存実装準拠）
+### 4.1 開発環境
 
 | レイヤー | 技術 | バージョン | 備考 |
 |---------|------|-----------|------|
 | **言語** | C# | 12.0 | .NET 8対応 |
-| **フレームワーク** | .NET | 8.0 | LTS版 |
-| **IDE** | Visual Studio | 2022 | 推奨 |
+| **フレームワーク** | .NET | 8.0 | LTS |
+| **IDE** | Visual Studio | 2022 | 既存.sln対応 |
 
-### 3.2 コアライブラリ（既存実装で使用中）
+### 4.2 既存のNuGetパッケージ（推測）
 
-| 用途 | ライブラリ | バージョン | 実装状況 |
-|------|----------|-----------|---------|
-| **パケットキャプチャ** | Npcap | 1.78+ | 要確認 |
-| **パケット処理** | SharpPcap | 6.3.0 | 要確認 |
-| **パケット解析** | PacketDotNet | 1.4.8 | 要確認 |
-| **構造化ログ** | カスタム実装 | - | ✅ 実装済み |
-| **設定ファイル** | カスタム実装 | - | ✅ INI/JSON両対応 |
+既存の `NonIPFileDelivery.csproj` から推測される依存関係：
 
-### 3.3 追加が必要なライブラリ
+| 用途 | ライブラリ | バージョン（推測） | 実装状況 |
+|------|----------|----------------|---------|
+| **パケットキャプチャ** | SharpPcap | 6.3.0+ | NetworkService内で使用と推測 |
+| **パケット解析** | PacketDotNet | 1.4.8+ | SharpPcapと併用 |
+| **設定ファイル** | ini-parser または System.Text.Json | 2.5.2+ / Built-in | INI/JSON両対応 |
+| **TPL Dataflow** | System.Threading.Tasks.Dataflow | Built-in | PacketProcessingPipeline |
+
+### 4.3 追加が必要なNuGetパッケージ（Stage 4実装時）
 
 | 用途 | ライブラリ | バージョン | 優先度 |
 |------|----------|-----------|-------|
-| **YARAスキャン** | libyara.NET | 4.3.0 | 最高 |
-| **暗号化** | .NET Crypto | Built-in | 最高 |
-| **ClamAV連携** | clamd client | - | 高 |
+| **YARAスキャン** | libyara.NET | 4.3.0 | 高 |
+| **構造化ログ（オプション）** | Serilog | 3.1.1 | 低（既存LoggingServiceで十分） |
+| **データベース** | Microsoft.Data.Sqlite | 8.0.0 | 中 |
 
 ---
 
-## 4. データフロー
+## 5. データフロー
 
-### 4.1 FTPファイル転送のデータフロー（正常系・README.md準拠）
+### 5.1 FTPファイル転送のデータフロー（正常系）
 
 ```mermaid
 sequenceDiagram
@@ -236,25 +296,25 @@ sequenceDiagram
     ProxyA->>ProxyA: 2. パケットキャプチャ<br/>(SharpPcap)
     ProxyA->>ProxyA: 3. プロトコル解析<br/>(FTP判定)
     ProxyA->>ProxyA: 4. セキュリティ検閲<br/>(未実施 - 接続段階)
-    ProxyA->>ProxyA: 5. 暗号化<br/>(AES-256-GCM) ← 🔴未実装
+    ProxyA->>ProxyA: 5. 暗号化<br/>(AES-256-GCM)
     ProxyA->>ProxyB: 6. Raw Ethernet送信<br/>(カスタムEtherType: 0x88B5)
     deactivate ProxyA
     
     activate ProxyB
     ProxyB->>ProxyB: 7. Raw Ethernet受信
-    ProxyB->>ProxyB: 8. 復号化 ← 🔴未実装
+    ProxyB->>ProxyB: 8. 復号化
     ProxyB->>ProxyB: 9. プロトコル再構築
     ProxyB->>FTPServer: 10. TCP接続転送<br/>(SYN to port 21)
     deactivate ProxyB
     
     FTPServer->>ProxyB: 11. SYN-ACK
     activate ProxyB
-    ProxyB->>ProxyB: 12. 暗号化 ← 🔴未実装
+    ProxyB->>ProxyB: 12. 暗号化
     ProxyB->>ProxyA: 13. Raw Ethernet送信
     deactivate ProxyB
     
     activate ProxyA
-    ProxyA->>ProxyA: 14. 復号化 ← 🔴未実装
+    ProxyA->>ProxyA: 14. 復号化
     ProxyA->>FTPClient: 15. SYN-ACK転送
     deactivate ProxyA
     
@@ -262,20 +322,20 @@ sequenceDiagram
     
     FTPClient->>ProxyA: 16. FTP USER command
     activate ProxyA
-    ProxyA->>ProxyA: 17. 検閲: コマンド検証 ← 🔴未実装
+    ProxyA->>ProxyA: 17. 検閲: コマンド検証
     ProxyA->>ProxyB: 18. 暗号化送信
     deactivate ProxyA
     ProxyB->>FTPServer: 19. USER command転送
     
     FTPClient->>ProxyA: 20. FTP RETR command<br/>(ファイル取得)
     activate ProxyA
-    ProxyA->>ProxyA: 21. 検閲: ファイル名検証 ← 🔴未実装
+    ProxyA->>ProxyA: 21. 検閲: ファイル名検証
     ProxyA->>ProxyB: 22. 暗号化送信
     deactivate ProxyA
     
     FTPServer->>ProxyB: 23. ファイルデータ送信開始
     activate ProxyB
-    ProxyB->>ProxyB: 24. セキュリティ検閲<br/>(マルウェアスキャン) ← ⚠️モック実装
+    ProxyB->>ProxyB: 24. セキュリティ検閲<br/>(マルウェアスキャン)
     ProxyB->>ProxyB: 25. ログ記録<br/>(ファイル名、サイズ、ハッシュ)
     ProxyB->>ProxyA: 26. 暗号化送信<br/>(チャンク単位)
     deactivate ProxyB
@@ -284,65 +344,18 @@ sequenceDiagram
     ProxyA->>FTPClient: 27. ファイルデータ転送
     deactivate ProxyA
     
-    Note over ProxyA,ProxyB: 全ての通信をログに記録 ✅実装済み
+    Note over ProxyA,ProxyB: 全ての通信をログに記録
 ```
 
-### 4.2 PostgreSQL接続のデータフロー（README.md準拠）
-
-```mermaid
-sequenceDiagram
-    participant PGClient as PostgreSQLクライアント<br/>(Windows端末A)
-    participant ProxyA as 非IP送受信機A
-    participant ProxyB as 非IP送受信機B
-    participant PGServer as PostgreSQLサーバ<br/>(Windows端末B)
-    
-    PGClient->>ProxyA: 1. PostgreSQL接続<br/>(TCP to port 5432)
-    activate ProxyA
-    ProxyA->>ProxyA: 2. プロトコル解析<br/>(PostgreSQL判定) ← 🔴未実装
-    ProxyA->>ProxyB: 3. 暗号化送信
-    deactivate ProxyA
-    ProxyB->>PGServer: 4. 接続転送
-    
-    PGServer->>ProxyB: 5. 認証要求
-    ProxyB->>ProxyA: 6. 暗号化送信
-    ProxyA->>PGClient: 7. 認証要求転送
-    
-    PGClient->>ProxyA: 8. 認証情報
-    activate ProxyA
-    ProxyA->>ProxyA: 9. 検閲: 認証情報ログ ✅実装済み
-    ProxyA->>ProxyB: 10. 暗号化送信
-    deactivate ProxyA
-    ProxyB->>PGServer: 11. 認証情報転送
-    
-    Note over PGClient,PGServer: 認証完了
-    
-    PGClient->>ProxyA: 12. SQL Query<br/>(e.g., SELECT * FROM users)
-    activate ProxyA
-    ProxyA->>ProxyA: 13. SQL検閲<br/>(SQLインジェクション検出) ← 🔴未実装
-    ProxyA->>ProxyA: 14. ログ記録<br/>(SQL文、実行ユーザー) ✅実装済み
-    ProxyA->>ProxyB: 15. 暗号化送信
-    deactivate ProxyA
-    
-    ProxyB->>PGServer: 16. SQL Query転送
-    
-    PGServer->>ProxyB: 17. クエリ結果
-    activate ProxyB
-    ProxyB->>ProxyB: 18. 結果検閲<br/>(データ漏洩検知) ← 🔴未実装
-    ProxyB->>ProxyA: 19. 暗号化送信
-    deactivate ProxyB
-    
-    ProxyA->>PGClient: 20. クエリ結果転送
-```
-
-### 4.3 セキュリティ検閲の内部フロー（README.md準拠）
+### 5.2 セキュリティ検閲の内部フロー（README.md準拠）
 
 ```mermaid
 flowchart TD
     A[パケット/ファイル受信] --> B{プロトコル種別判定}
     
-    B -->|FTP| C[FTP検閲パイプライン ← 🔴未実装]
-    B -->|SFTP| D[SFTP検閲パイプライン ← 🔴未実装]
-    B -->|PostgreSQL| E[PostgreSQL検閲パイプライン ← 🔴未実装]
+    B -->|FTP| C[FTP検閲パイプライン]
+    B -->|SFTP| D[SFTP検閲パイプライン]
+    B -->|PostgreSQL| E[PostgreSQL検閲パイプライン]
     B -->|その他| F[汎用検閲パイプライン]
     
     C --> G[コマンド検証]
@@ -359,7 +372,7 @@ flowchart TD
     
     F --> N[汎用パターンマッチング]
     
-    I --> O{YARAスキャン ← ⚠️モック}
+    I --> O{YARAスキャン}
     O -->|マルウェア検出| P[通信遮断]
     O -->|クリーン| Q[転送許可]
     
@@ -367,10 +380,10 @@ flowchart TD
     R -->|DROP/DELETE without WHERE| P
     R -->|安全| Q
     
-    P --> S[アラートログ記録 ✅実装済み]
-    P --> T[管理者通知 ✅実装済み]
+    P --> S[アラートログ記録]
+    P --> T[管理者通知]
     
-    Q --> U[通常ログ記録 ✅実装済み]
+    Q --> U[通常ログ記録]
     Q --> V[次のステージへ転送]
     
     style P fill:#f99
@@ -379,310 +392,278 @@ flowchart TD
 
 ---
 
-## 5. Custom Ethernet Frame仕様
+## 6. Custom Ethernet Frame仕様
 
-### 5.1 既存実装のフレームフォーマット
+### 6.1 フレームフォーマット（既存実装）
 
 ```
-+-------------------------------------------------------------------------+
-| Ethernet Header (14 bytes)                                              |
-|-------------------------------------------------------------------------|
-| Destination MAC (6) | Source MAC (6) | EtherType: 0x88B5 (2)            |
-+-------------------------------------------------------------------------+
-| Custom Protocol Header (20 bytes)                                       |
-|-------------------------------------------------------------------------|
-| Type (1) | Sequence Number (2) | Payload Length (2) | Flags (1)        |
-+-------------------------------------------------------------------------+
-| Payload (variable length)                                               |
-|-------------------------------------------------------------------------|
-| Variable Data (JSON or Binary)                                          |
-+-------------------------------------------------------------------------+
-| CRC32 Checksum (4 bytes)                                                |
-|-------------------------------------------------------------------------|
-| Checksum (4)                                                            |
-+-------------------------------------------------------------------------+
++-----------------------------------------------------------+
+| Ethernet Header (14 bytes)                                |
+|-----------------------------------------------------------|
+| DestinationMAC (6) | SourceMAC (6) | EtherType: 0x88B5 (2)|
++-----------------------------------------------------------+
+| Custom Protocol Header (6 bytes)                          |
+|-----------------------------------------------------------|
+| Type (1) | SequenceNumber (2) | PayloadLength (2) |      |
+| Flags (1)                                                 |
++-----------------------------------------------------------+
+| Payload (variable length)                                 |
+|-----------------------------------------------------------|
+| Data (JSON or binary)                                     |
++-----------------------------------------------------------+
+| CRC32 Checksum (4 bytes)                                  |
++-----------------------------------------------------------+
 ```
 
-### 5.2 フィールド詳細（既存実装）
+### 6.2 フィールド詳細定義
 
-| フィールド | オフセット | サイズ | データ型 | 説明 | 実装状況 |
+| フィールド | オフセット | サイズ | データ型 | 説明 | 値の範囲 |
 |-----------|----------|--------|---------|------|---------|
-| **Destination MAC** | 0 | 6 bytes | byte[] | 宛先MACアドレス | ✅ |
-| **Source MAC** | 6 | 6 bytes | byte[] | 送信元MACアドレス | ✅ |
-| **EtherType** | 12 | 2 bytes | ushort | プロトコル識別子（0x88B5） | ✅ |
-| **Type** | 14 | 1 byte | FrameType | フレーム種別 | ✅ |
-| **Sequence Number** | 15 | 2 bytes | ushort | パケット順序番号 (0-65535) | ✅ |
-| **Payload Length** | 17 | 2 bytes | ushort | ペイロードサイズ (最大65KB) | ✅ |
-| **Flags** | 19 | 1 byte | FrameFlags | 制御フラグ | ✅ |
-| **Payload** | 20 | 可変 | byte[] | データペイロード | ✅ |
-| **Checksum** | 末尾 | 4 bytes | uint | CRC-32チェックサム | ✅ |
+| **DestinationMAC** | 0 | 6 bytes | byte[] | 宛先MACアドレス | 非IP送受信機A/BのMAC |
+| **SourceMAC** | 6 | 6 bytes | byte[] | 送信元MACアドレス | 非IP送受信機A/BのMAC |
+| **EtherType** | 12 | 2 bytes | ushort | プロトコル識別子 | **0x88B5** (固定値) |
+| **Type** | 14 | 1 byte | FrameType | フレーム種別 | Data, Heartbeat, FileTransfer等 |
+| **SequenceNumber** | 15 | 2 bytes | ushort | パケット順序番号 | 0 - 65535 |
+| **PayloadLength** | 17 | 2 bytes | ushort | ペイロードサイズ | 0 - 65535 bytes |
+| **Flags** | 19 | 1 byte | FrameFlags | 制御フラグ | Encrypted, Compressed等 |
+| **Payload** | 20 | 可変 | byte[] | データ（JSON or バイナリ） | 最大64KB |
+| **Checksum** | 末尾 | 4 bytes | uint | CRC-32チェックサム | フレーム全体に対して計算 |
 
-### 5.3 FrameType 定義（既存実装）
+### 6.3 FrameType 定義（既存実装）
 
 ```csharp
 public enum FrameType : byte
 {
-    Data = 0x01,            // ✅ 実装済み
-    Heartbeat = 0x02,       // ✅ 実装済み
-    Acknowledgment = 0x03,  // ✅ 実装済み
-    Control = 0x04,         // ✅ 実装済み
-    FileTransfer = 0x10,    // ✅ 実装済み
-    SecurityScan = 0x20,    // ⚠️ 定義のみ
-    Error = 0xFF            // ✅ 実装済み
+    Data = 0x01,            // データフレーム
+    Heartbeat = 0x02,       // ハートビート
+    Acknowledgment = 0x03,  // 確認応答
+    Control = 0x04,         // 制御フレーム
+    FileTransfer = 0x10,    // ファイル転送専用
+    SecurityScan = 0x20,    // セキュリティスキャン結果
+    Error = 0xFF            // エラー通知
 }
 ```
 
-### 5.4 FrameFlags 定義（既存実装）
+### 6.4 FrameFlags 定義（既存実装）
 
 ```csharp
 [Flags]
 public enum FrameFlags : byte
 {
-    None = 0x00,            // ✅
-    Encrypted = 0x01,       // 🔴 定義のみ（機能未実装）
-    Compressed = 0x02,      // 🔴 定義のみ（機能未実装）
-    Priority = 0x04,        // ✅ 実装済み
-    FragmentStart = 0x08,   // ✅ 実装済み
-    FragmentEnd = 0x10,     // ✅ 実装済み
-    RequireAck = 0x20,      // ✅ 実装済み
-    Broadcast = 0x40,       // ✅ 実装済み
-    Reserved = 0x80         // -
+    None = 0x00,            // フラグなし
+    Encrypted = 0x01,       // 暗号化フラグ（実装予定）
+    Compressed = 0x02,      // 圧縮済み
+    Priority = 0x04,        // 高優先度
+    FragmentStart = 0x08,   // フラグメント開始
+    FragmentEnd = 0x10,     // フラグメント終了
+    RequireAck = 0x20,      // ACK必須
+    Broadcast = 0x40,       // ブロードキャスト
+    Reserved = 0x80         // 予約（将来の拡張用）
 }
 ```
 
-### 5.5 フレーム構築・解析フロー（既存実装）
+### 6.5 フレーム構築・解析フロー
 
 ```mermaid
 flowchart LR
-    subgraph "送信側（FrameService）"
-        A1[元データ受信] --> A2[NonIPFrame作成]
-        A2 --> A3[GetNextSequenceNumber<br/>スレッドセーフ]
-        A3 --> A4[SerializeFrame<br/>BinaryWriter使用]
-        A4 --> A5[CRC32計算<br/>Crc32Calculator]
-        A5 --> A6[完成フレーム]
-        A6 --> A7[NetworkService.Send]
+    subgraph "送信側 (非IP送受信機A)"
+        A1[元のIPパケット受信] --> A2[FrameService.CreateDataFrame]
+        A2 --> A3[Sequence Number割り当て]
+        A3 --> A4[Payload設定]
+        A4 --> A5[FrameService.SerializeFrame]
+        A5 --> A6[CRC32計算<br/>Crc32Calculator]
+        A6 --> A7[Raw Ethernet送信<br/>NetworkService]
     end
     
-    subgraph "受信側（FrameService）"
-        B1[NetworkService.Receive] --> B2[DeserializeFrame<br/>BinaryReader使用]
-        B2 --> B3[EtherType検証<br/>0x88B5確認]
-        B3 --> B4[CRC32検証<br/>改ざんチェック]
-        B4 --> B5[Payload抽出]
-        B5 --> B6[NonIPFrame復元]
-        B6 --> B7[後続処理へ]
+    subgraph "受信側 (非IP送受信機B)"
+        B1[SharpPcap.OnPacketArrival] --> B2[Ethernet Header検証<br/>EtherType == 0x88B5]
+        B2 --> B3[FrameService.DeserializeFrame]
+        B3 --> B4[CRC32検証]
+        B4 --> B5[Payload取得]
+        B5 --> B6[元のIPパケット復元]
+        B6 --> B7[Windows TCP/IP Stackへ送信]
     end
     
     A7 --> B1
     
-    style A5 fill:#ffcc99
-    style B4 fill:#ff9999
+    style A6 fill:#ffcc99
+    style B4 fill:#ffcc99
 ```
 
 ---
 
-## 6. モジュール設計
+## 7. モジュール設計
 
-### 6.1 Services/配下のクラス構成（既存実装）
+### 7.1 既存Services/配下のクラス構成
 
-```mermaid
-graph TB
-    subgraph "Services層"
-        A[ConfigurationService<br/>✅ 実装済み]
-        B[FrameService<br/>✅ 実装済み]
-        C[LoggingService<br/>✅ 実装済み]
-        D[NetworkService<br/>要確認]
-        E[SecurityService<br/>⚠️ モック]
-        F[NonIPFileDeliveryService<br/>要確認]
-        G[PacketProcessingPipeline<br/>✅ 実装済み]
-    end
+#### 7.1.1 ConfigurationService.cs
+
+**実装済み機能:**
+- INI形式設定ファイル読み込み
+- JSON形式設定ファイル読み込み
+- INI ↔ JSON変換機能
+- デフォルト設定ファイル生成
+
+**主要メソッド:**
+```csharp
+Task<Configuration> LoadConfigurationAsync(string path)
+Task CreateDefaultConfigurationAsync(string path)
+Task ConvertIniToJsonAsync(string iniPath, string jsonPath)
+```
+
+#### 7.1.2 FrameService.cs
+
+**実装済み機能:**
+- カスタムフレームのシリアライズ/デシリアライズ
+- CRC32チェックサムの計算・検証
+- シーケンス番号管理（スレッドセーフ）
+- 各種フレーム生成（Heartbeat, Data, FileTransfer）
+
+**主要メソッド:**
+```csharp
+byte[] SerializeFrame(NonIPFrame frame)
+NonIPFrame? DeserializeFrame(byte[] data)
+NonIPFrame CreateHeartbeatFrame(byte[] sourceMac)
+NonIPFrame CreateDataFrame(byte[] sourceMac, byte[] destinationMac, byte[] data, FrameFlags flags)
+NonIPFrame CreateFileTransferFrame(byte[] sourceMac, byte[] destinationMac, FileTransferFrame fileData)
+bool ValidateFrame(NonIPFrame frame, byte[] rawData)
+```
+
+**CRC32計算の実装:**
+```csharp
+// Utilities/Crc32Calculator.cs (推測)
+public static uint Calculate(byte[] data)
+{
+    // CRC-32/ISO-HDLC アルゴリズム実装
+}
+```
+
+#### 7.1.3 LoggingService.cs
+
+**実装済み機能:**
+- 構造化ログ出力（JSON形式）
+- ログレベル制御（Debug, Info, Warning, Error）
+- ファイルへのログ出力
+- プロパティベースログ（`LogWithProperties`）
+
+**主要メソッド:**
+```csharp
+void Debug(string message)
+void Info(string message)
+void Warning(string message)
+void Error(string message, Exception? ex = null)
+void LogWithProperties(LogLevel level, string message, params (string Key, object Value)[] properties)
+void SetLogLevel(LogLevel level)
+void SetLogToFile(string path)
+```
+
+**構造化ログの例:**
+```csharp
+_logger.LogWithProperties(
+    LogLevel.Info,
+    "Configuration summary",
+    ("Mode", configuration.General.Mode),
+    ("Interface", configuration.Network.Interface),
+    ("FrameSize", configuration.Network.FrameSize)
+);
+// 出力: {"Timestamp":"2025-10-02T11:03:38Z","Level":"Info","Message":"Configuration summary","Properties":{"Mode":"ActiveStandby","Interface":"eth0","FrameSize":9000}}
+```
+
+#### 7.1.4 NetworkService.cs
+
+**実装済み機能（推測）:**
+- SharpPcapによるパケットキャプチャ
+- Raw Ethernet送受信
+- ネットワークインターフェース管理
+
+**主要メソッド（推測）:**
+```csharp
+Task<bool> StartCaptureAsync(string interfaceName)
+Task StopCaptureAsync()
+void SendFrame(byte[] frameData)
+event EventHandler<PacketCaptureEventArgs> PacketArrived
+```
+
+#### 7.1.5 SecurityService.cs
+
+**実装済み機能:**
+- セキュリティモジュール初期化
+- 隔離ディレクトリの自動作成
+- セキュリティポリシーファイル読み込み
+- タイムアウト付きデータスキャン（現在はモック実装）
+- ファイル隔離機能
+
+**現在の実装状況:**
+```csharp
+public async Task<ScanResult> ScanData(byte[] data, string fileName)
+{
+    // ⚠️ 現在はシミュレーション実装
+    // Simulate virus scanning with timeout
+    var scanTask = Task.Run(async () =>
+    {
+        var scanTimeMs = Math.Min(data.Length / 1000, _config.ScanTimeout);
+        await Task.Delay(scanTimeMs);
+        
+        // Simulate occasional threat detection (1% chance)
+        if (Random.Shared.Next(1, 101) == 1)
+        {
+            return new ScanResult
+            {
+                IsClean = false,
+                ThreatName = "Simulated.Threat.Test",
+                Details = "Simulated threat for testing purposes"
+            };
+        }
+        
+        return new ScanResult { IsClean = true, Details = "No threats detected" };
+    });
     
-    subgraph "未実装コンポーネント"
-        H[CryptoService<br/>🔴 新規作成必要]
-        I[ProtocolAnalyzer<br/>🔴 新規作成必要]
-        J[SQLInjectionDetector<br/>🔴 新規作成必要]
-    end
-    
-    F --> A
-    F --> B
-    F --> C
-    F --> D
-    F --> E
-    F --> G
-    
-    E -.->|将来統合| H
-    G -.->|将来統合| I
-    E -.->|将来統合| J
+    // タイムアウト処理は本番レベル
+    var timeoutTask = Task.Delay(_config.ScanTimeout);
+    var completedTask = await Task.WhenAny(scanTask, timeoutTask);
+    // ...
+}
 ```
 
-### 6.2 主要クラスの実装状況詳細
+**🔴 Stage 4で実装が必要な機能:**
+- YARAスキャンの実装（libyara.NET統合）
+- ClamAV統合（clamd連携）
+- 実際のマルウェア検出ロジック
 
-#### 6.2.1 FrameService（✅ 実装済み）
+#### 7.1.6 PacketProcessingPipeline.cs
 
-**実装済みメソッド:**
+**実装済み機能:**
+- TPL Dataflowによる並列処理パイプライン
+- 統計情報の自動収集（スループット、ドロップ率等）
+- バックプレッシャー制御
+- パケット処理の3段階パイプライン
+
+**統計情報（推測）:**
 ```csharp
-public class FrameService : IFrameService
+public class PipelineStatistics
 {
-    // ✅ 実装済み
-    public byte[] SerializeFrame(NonIPFrame frame);
-    public NonIPFrame? DeserializeFrame(byte[] data);
-    public NonIPFrame CreateHeartbeatFrame(byte[] sourceMac);
-    public NonIPFrame CreateDataFrame(byte[] sourceMac, byte[] destinationMac, byte[] data, FrameFlags flags);
-    public NonIPFrame CreateFileTransferFrame(byte[] sourceMac, byte[] destinationMac, FileTransferFrame fileData);
-    public bool ValidateFrame(NonIPFrame frame, byte[] rawData);
-    
-    // 🔴 未実装（追加が必要）
-    // - 暗号化フレーム作成（Encrypted フラグ使用）
-    // - 圧縮フレーム作成（Compressed フラグ使用）
+    public long TotalPacketsProcessed { get; set; }
+    public long TotalPacketsDropped { get; set; }
+    public long TotalSecurityBlocks { get; set; }
+    public double DropRate { get; set; }
+    public double ThroughputMbps { get; set; }
+    public double PacketsPerSecond { get; set; }
+    public TimeSpan Uptime { get; set; }
 }
 ```
 
-**機能評価:**
-- ✅ CRC32チェックサム実装
-- ✅ シーケンス番号管理（スレッドセーフ）
-- ✅ ハートビート機能
-- ✅ ファイル転送フレーム（JSON形式）
-- 🔴 暗号化機能未実装
-- 🔴 圧縮機能未実装
+#### 7.1.7 NonIPFileDeliveryService.cs
 
-#### 6.2.2 SecurityService（⚠️ モック実装）
-
-**実装済みメソッド:**
-```csharp
-public class SecurityService : ISecurityService
-{
-    // ✅ 実装済み
-    public async Task<bool> InitializeSecurity(SecurityConfig config);
-    public async Task<bool> QuarantineFile(string filePath, string reason);
-    
-    // ⚠️ モック実装（要実装）
-    public async Task<ScanResult> ScanData(byte[] data, string fileName);
-    // ↑ 現在はシミュレーション（1%の確率でランダムに検出）
-    
-    // 🔴 未実装（追加が必要）
-    // - YARAスキャン統合
-    // - ClamAV統合
-    // - SQLインジェクション検出
-    // - プロトコル異常検知
-}
-```
-
-**機能評価:**
-- ✅ セキュリティ初期化
-- ✅ 隔離ディレクトリ管理
-- ✅ タイムアウト処理
-- ⚠️ スキャン機能がモック（実装必須）
-
-#### 6.2.3 LoggingService（✅ 実装済み）
-
-**実装済みメソッド:**
-```csharp
-public class LoggingService : ILoggingService
-{
-    // ✅ 高品質実装済み
-    public void Info(string message);
-    public void Warning(string message);
-    public void Error(string message, Exception? ex = null);
-    public void Debug(string message);
-    public void LogWithProperties(LogLevel level, string message, params (string key, object? value)[] properties);
-    public void SetLogToFile(string logPath);
-    public void SetLogLevel(LogLevel level);
-}
-```
-
-**機能評価:**
-- ✅ 構造化ログ（プロパティ付き）
-- ✅ ファイル出力
-- ✅ ログレベル制御
-- ✅ 自動ローテーション対応
-
-#### 6.2.4 PacketProcessingPipeline（✅ 実装済み）
-
-**実装済みメソッド:**
-```csharp
-public class PacketProcessingPipeline : IDisposable
-{
-    // ✅ TPL Dataflow使用の高度な実装
-    public void Initialize();
-    public async Task CompleteAsync();
-    public PipelineStatistics GetStatistics();
-    public void Dispose();
-}
-```
-
-**機能評価:**
-- ✅ TPL Dataflow使用
-- ✅ バックプレッシャー制御
-- ✅ 統計情報収集
-- ✅ Graceful Shutdown
-
-### 6.3 追加が必要なクラス
-
-#### 6.3.1 CryptoService（🔴 新規作成必要）
-
-```csharp
-// 新規ファイル: Services/CryptoService.cs
-public interface ICryptoService
-{
-    byte[] Encrypt(byte[] plaintext);
-    byte[] Decrypt(byte[] ciphertext);
-    byte[] GenerateNonce();
-    void RotateKey();
-}
-
-public class CryptoService : ICryptoService
-{
-    // AES-256-GCM実装
-    // KeyManager統合
-    // NonceGenerator実装
-}
-```
-
-**実装優先度:** ⭐⭐⭐⭐⭐（最高）
-
-#### 6.3.2 ProtocolAnalyzer（🔴 新規作成必要）
-
-```csharp
-// 新規ファイル: Services/ProtocolAnalyzer.cs
-public interface IProtocolAnalyzer
-{
-    ProtocolType DetectProtocol(byte[] data);
-    FTPPacket ParseFTP(byte[] data);
-    PostgreSQLPacket ParsePostgreSQL(byte[] data);
-}
-
-public class ProtocolAnalyzer : IProtocolAnalyzer
-{
-    // FTP RFC 959 解析
-    // PostgreSQL ワイヤプロトコル解析
-}
-```
-
-**実装優先度:** ⭐⭐⭐⭐（高）
-
-#### 6.3.3 SQLInjectionDetector（🔴 新規作成必要）
-
-```csharp
-// 新規ファイル: Services/SQLInjectionDetector.cs
-public interface ISQLInjectionDetector
-{
-    bool Detect(string sqlQuery);
-    bool IsDangerousSQL(string sqlQuery);
-}
-
-public class SQLInjectionDetector : ISQLInjectionDetector
-{
-    // 正規表現パターンマッチング
-    // 危険なSQL文検出（DROP TABLE, DELETE FROM等）
-}
-```
-
-**実装優先度:** ⭐⭐⭐（中）
+**実装済み機能:**
+- サービスライフサイクル管理
+- 各種サービスの統合とオーケストレーション
+- 起動・停止処理
 
 ---
 
-## 7. 設定ファイル仕様
+## 8. 設定ファイル仕様
 
-### 7.1 config.ini（既存実装準拠）
+### 8.1 config.ini（既存実装準拠）
 
 ```ini
 [General]
@@ -692,11 +673,11 @@ LogLevel=Warning    # Debug | Info | Warning | Error
 [Network]
 Interface=eth0               # ネットワークインターフェース名
 FrameSize=9000               # 9000=Jumbo Frame, 1500=標準MTU
-Encryption=true              # AES-256-GCM有効/無効 ← 🔴機能未実装
-EtherType=0x88B5             # カスタムEtherType（固定値）
+Encryption=true              # AES-256-GCM有効/無効（実装予定）
+EtherType=0x88B5             # カスタムEtherType (固定値)
 
 [Security]
-EnableVirusScan=true         # ウイルススキャン有効化
+EnableVirusScan=true         # ClamAVスキャン有効化
 ScanTimeout=5000             # スキャンタイムアウト (milliseconds)
 QuarantinePath=C:\NonIP\Quarantine  # 隔離ディレクトリ
 PolicyFile=security_policy.ini      # ポリシーファイルパス
@@ -704,7 +685,7 @@ PolicyFile=security_policy.ini      # ポリシーファイルパス
 [Performance]
 MaxMemoryMB=8192             # 最大メモリ使用量 (8GB)
 BufferSize=65536             # パケットバッファサイズ (64KB)
-ThreadPool=auto              # スレッドプール（auto=CPU数×2）
+ThreadPool=auto              # スレッドプール (auto=CPU数×2)
 
 [Redundancy]
 HeartbeatInterval=1000       # ハートビート間隔 (milliseconds)
@@ -712,187 +693,438 @@ FailoverTimeout=5000         # フェイルオーバータイムアウト (milli
 DataSyncMode=realtime        # データ同期モード (realtime | batch)
 ```
 
-### 7.2 Configuration モデル（既存実装）
+### 8.2 Configuration.cs モデル（既存実装）
 
 ```csharp
 public class Configuration
 {
-    public GeneralConfig General { get; set; } = new();       // ✅ 実装済み
-    public NetworkConfig Network { get; set; } = new();       // ✅ 実装済み
-    public SecurityConfig Security { get; set; } = new();     // ✅ 実装済み
-    public PerformanceConfig Performance { get; set; } = new();  // ✅ 実装済み
-    public RedundancyConfig Redundancy { get; set; } = new();    // ✅ 実装済み
+    public GeneralConfig General { get; set; } = new();
+    public NetworkConfig Network { get; set; } = new();
+    public SecurityConfig Security { get; set; } = new();
+    public PerformanceConfig Performance { get; set; } = new();
+    public RedundancyConfig Redundancy { get; set; } = new();
+}
+
+public class GeneralConfig
+{
+    public string Mode { get; set; } = "ActiveStandby";
+    public string LogLevel { get; set; } = "Warning";
+}
+
+public class NetworkConfig
+{
+    public string Interface { get; set; } = "eth0";
+    public int FrameSize { get; set; } = 9000;
+    public bool Encryption { get; set; } = true;
+    public string EtherType { get; set; } = "0x88B5";
+}
+
+public class SecurityConfig
+{
+    public bool EnableVirusScan { get; set; } = true;
+    public int ScanTimeout { get; set; } = 5000;
+    public string QuarantinePath { get; set; } = "C:\\NonIP\\Quarantine";
+    public string PolicyFile { get; set; } = "security_policy.ini";
+}
+
+public class PerformanceConfig
+{
+    public int MaxMemoryMB { get; set; } = 8192;
+    public int BufferSize { get; set; } = 65536;
+    public string ThreadPool { get; set; } = "auto";
+}
+
+public class RedundancyConfig
+{
+    public int HeartbeatInterval { get; set; } = 1000;
+    public int FailoverTimeout { get; set; } = 5000;
+    public string DataSyncMode { get; set; } = "realtime";
 }
 ```
 
-**機能評価:**
-- ✅ INI/JSON両対応
-- ✅ デフォルト値設定
-- ✅ 型安全なアクセス
-- ✅ コマンドライン上書き対応
+---
+
+## 9. 性能設計
+
+### 9.1 スループット目標（README.md準拠）
+
+| 環境 | 目標スループット | 実装戦略 |
+|------|----------------|---------|
+| **1GbE** | 2Gbps | NICボンディング（Link Aggregation）2本使用 |
+| **10GbE** | 8Gbps | マルチスレッド暗号化、ゼロコピー |
+
+### 9.2 既存実装の並列処理
+
+**PacketProcessingPipeline.cs の実装:**
+- TPL Dataflowによるパイプライン並列処理
+- バックプレッシャー制御によるメモリ使用量制限
+- 自動的なワーカースレッド数調整
+
+**スレッド数の決定（推測）:**
+```csharp
+// ThreadPool=autoの場合
+int workerThreads = Environment.ProcessorCount * 2;
+```
+
+### 9.3 統計情報の自動収集
+
+**Program.cs で10秒ごとに統計出力:**
+```csharp
+_ = Task.Run(async () =>
+{
+    while (!_disposed && _pipeline != null)
+    {
+        await Task.Delay(10_000);  // 10秒ごと
+        
+        var stats = _pipeline.GetStatistics();
+        _logger.LogWithProperties(
+            LogLevel.Info,
+            "Pipeline statistics",
+            ("Processed", stats.TotalPacketsProcessed),
+            ("Dropped", stats.TotalPacketsDropped),
+            ("SecurityBlocks", stats.TotalSecurityBlocks),
+            ("DropRate", $"{stats.DropRate:F2}%"),
+            ("Throughput", $"{stats.ThroughputMbps:F2} Mbps"),
+            ("PacketsPerSec", $"{stats.PacketsPerSecond:F2}"),
+            ("Uptime", stats.Uptime.ToString(@"hh\:mm\:ss")));
+        
+        Console.WriteLine($"📊 処理:{stats.TotalPacketsProcessed} 破棄:{stats.TotalPacketsDropped} スループット:{stats.ThroughputMbps:F2}Mbps 稼働:{stats.Uptime:hh\\:mm\\:ss}");
+    }
+});
+```
 
 ---
 
-## 8. 性能設計
+## 10. 既存実装の評価
 
-### 8.1 スループット目標（README.md準拠）
+### 10.1 実装済み機能の評価
 
-| 環境 | 目標スループット | 実装戦略 | 実装状況 |
-|------|----------------|---------|---------|
-| **1GbE** | 2Gbps | NICボンディング2本使用 | 要確認 |
-| **10GbE** | 8Gbps | マルチスレッド暗号化、ゼロコピー | 要確認 |
+| カテゴリ | 機能 | 実装状況 | 品質評価 | 備考 |
+|---------|------|---------|---------|------|
+| **基盤** | コマンドライン引数解析 | ✅ 完了 | ⭐⭐⭐⭐⭐ | `--debug`, `--log-level`, `--config`, `--convert-to-json`, `--help` |
+| **基盤** | INI/JSON設定ファイル | ✅ 完了 | ⭐⭐⭐⭐⭐ | 双方向変換機能付き |
+| **基盤** | 構造化ログ | ✅ 完了 | ⭐⭐⭐⭐⭐ | JSON形式、プロパティベース |
+| **基盤** | リトライポリシー | ✅ 完了 | ⭐⭐⭐⭐⭐ | Exponential Backoff |
+| **フレーム** | カスタムフレーム構造 | ✅ 完了 | ⭐⭐⭐⭐ | EtherType 0x88B5、FrameType/Flags充実 |
+| **フレーム** | CRC32チェックサム | ✅ 完了 | ⭐⭐⭐⭐⭐ | フレーム全体に対して計算 |
+| **フレーム** | シーケンス番号管理 | ✅ 完了 | ⭐⭐⭐⭐ | スレッドセーフ実装 |
+| **フレーム** | ハートビートフレーム | ✅ 完了 | ⭐⭐⭐⭐ | JSON形式、バージョン情報含む |
+| **パイプライン** | TPL Dataflow | ✅ 完了 | ⭐⭐⭐⭐⭐ | バックプレッシャー制御、統計自動収集 |
+| **セキュリティ** | 隔離機能 | ✅ 完了 | ⭐⭐⭐⭐ | タイムスタンプ付きファイル名 |
+| **セキュリティ** | タイムアウト付きスキャン | ✅ 完了 | ⭐⭐⭐⭐ | `Task.WhenAny` 使用 |
+| **サービス** | Graceful Shutdown | ✅ 完了 | ⭐⭐⭐⭐⭐ | Ctrl+C対応、リソース解放 |
 
-### 8.2 並列処理設計（既存実装）
+### 10.2 既存実装の強み
+
+1. **TPL Dataflow採用**: ConcurrentQueueよりも高度な並列処理
+2. **CRC32チェックサム**: データ整合性の保証
+3. **INI ↔ JSON変換**: 柔軟な設定管理
+4. **構造化ログ**: JSON形式で機械可読
+5. **充実したFrameFlags**: 圧縮、フラグメンテーション対応
+6. **統計情報自動収集**: リアルタイム監視が容易
+
+---
+
+## 11. 実装ギャップと追加実装計画
+
+### 11.1 未実装機能の一覧
+
+| 優先度 | 機能 | 現状 | 必要な作業 | 該当ファイル |
+|-------|------|------|----------|------------|
+| **最高** | AES-256-GCM暗号化 | 未実装（Encryptedフラグはあるが機能なし） | 新規CryptoService作成 | `Services/CryptoService.cs` (新規) |
+| **高** | YARAスキャン実装 | モックのみ | libyara.NET統合 | `Services/SecurityService.cs` (修正) |
+| **高** | ClamAV統合 | コメントのみ | clamd連携実装 | `Services/SecurityService.cs` (修正) |
+| **高** | SharpPcapキャプチャ | 未確認（NetworkService要調査） | 実装確認必要 | `Services/NetworkService.cs` (調査) |
+| **中** | FTP/PostgreSQL解析 | 未実装 | 新規ProtocolAnalyzer作成 | `Services/ProtocolAnalyzer.cs` (新規) |
+| **中** | SQLインジェクション検出 | 未実装 | 新規Detector作成 | `Services/SQLInjectionDetector.cs` (新規) |
+| **低** | Session ID管理 | 未実装 | FrameHeader拡張 | `Models/FrameProtocol.cs` (拡張) |
+
+### 11.2 Stage 4 実装計画（Phase分け）
+
+#### **Phase 1: セキュリティ機能の実装（最優先）**
+
+**タスク 1-1: CryptoService の新規作成**
 
 ```csharp
-// PacketProcessingPipeline: TPL Dataflow使用
-// - バックプレッシャー制御組み込み済み
-// - スレッド数自動調整（CPU数ベース）
-// - ConcurrentQueue より高度な実装
+// Services/ICryptoService.cs
+public interface ICryptoService
+{
+    byte[] Encrypt(byte[] plaintext);
+    byte[] Decrypt(byte[] ciphertext);
+    byte[] GenerateNonce();
+    void RotateKey();
+}
+
+// Services/CryptoService.cs
+public class CryptoService : ICryptoService
+{
+    private readonly ILogger<CryptoService> _logger;
+    private byte[] _key; // 256-bit key
+    
+    public CryptoService(ILogger<CryptoService> logger)
+    {
+        _logger = logger;
+        _key = GenerateKey();
+    }
+    
+    public byte[] Encrypt(byte[] plaintext)
+    {
+        // AES-256-GCM実装
+        // System.Security.Cryptography.AesGcm 使用
+    }
+    
+    public byte[] Decrypt(byte[] ciphertext)
+    {
+        // AES-256-GCM復号化
+        // Authentication Tag検証
+    }
+    
+    private byte[] GenerateKey()
+    {
+        // 256-bit (32 bytes) 鍵生成
+        using var rng = RandomNumberGenerator.Create();
+        var key = new byte[32];
+        rng.GetBytes(key);
+        return key;
+    }
+}
 ```
 
-**評価:** ✅ 高品質実装済み（Stage 3設計以上）
+**タスク 1-2: FrameService.cs の拡張（暗号化統合）**
 
-### 8.3 メモリ管理戦略
-
-| 手法 | 実装状況 | 備考 |
-|------|---------|------|
-| **メモリプール** | 要確認 | ArrayPool<byte>使用推奨 |
-| **Server GCモード** | 要確認 | .csproj設定確認必要 |
-| **ゼロコピー** | 要確認 | Span<T>, Memory<T>使用推奨 |
-
----
-
-## 9. 実装ギャップ分析
-
-### 9.1 優先度別実装タスク
-
-#### **Phase 1: セキュリティ機能（最優先）**
-
-| タスク | 優先度 | 推定工数 | 依存関係 |
-|-------|--------|---------|---------|
-| **CryptoService実装** | ⭐⭐⭐⭐⭐ | 3日 | - |
-| **FrameService暗号化統合** | ⭐⭐⭐⭐⭐ | 2日 | CryptoService |
-| **YARAスキャン実装** | ⭐⭐⭐⭐ | 3日 | - |
-| **SecurityService実装完成** | ⭐⭐⭐⭐ | 2日 | YARAスキャン |
-| **ClamAV統合** | ⭐⭐⭐ | 2日 | - |
-
-#### **Phase 2: プロトコル解析（高優先度）**
-
-| タスク | 優先度 | 推定工数 | 依存関係 |
-|-------|--------|---------|---------|
-| **ProtocolAnalyzer実装** | ⭐⭐⭐⭐ | 4日 | - |
-| **FTPAnalyzer実装** | ⭐⭐⭐ | 2日 | ProtocolAnalyzer |
-| **PostgreSQLAnalyzer実装** | ⭐⭐⭐ | 3日 | ProtocolAnalyzer |
-| **SQLInjectionDetector実装** | ⭐⭐⭐ | 2日 | - |
-
-#### **Phase 3: フレーム構造拡張（オプション）**
-
-| タスク | 優先度 | 推定工数 | 依存関係 |
-|-------|--------|---------|---------|
-| **SessionID追加** | ⭐⭐ | 2日 | - |
-| **Versionフィールド追加** | ⭐⭐ | 1日 | - |
-| **SequenceNumber拡張** | ⭐ | 1日 | - |
-
-### 9.2 実装状況サマリー
-
-```mermaid
-pie title 実装完了率
-    "実装済み（高品質）" : 60
-    "モック実装" : 15
-    "未実装（必須）" : 20
-    "未実装（オプション）" : 5
+```csharp
+// FrameService.cs に追加
+public class FrameService : IFrameService
+{
+    private readonly ICryptoService _cryptoService; // 追加
+    
+    public FrameService(ILoggingService logger, ICryptoService cryptoService)
+    {
+        _logger = logger;
+        _cryptoService = cryptoService;
+    }
+    
+    public byte[] SerializeFrame(NonIPFrame frame)
+    {
+        // 既存のシリアライズ処理
+        var frameData = BuildFrameData(frame);
+        
+        // 暗号化が有効な場合
+        if ((frame.Header.Flags & FrameFlags.Encrypted) != 0)
+        {
+            var nonce = _cryptoService.GenerateNonce();
+            frame.Payload = _cryptoService.Encrypt(frame.Payload);
+            // Nonceをヘッダーまたはペイロードに含める
+        }
+        
+        // CRC32計算
+        var checksum = Crc32Calculator.Calculate(frameData);
+        // ...
+    }
+}
 ```
 
-**実装済み機能（60%）:**
-- ✅ コマンドライン引数解析
-- ✅ 設定ファイル管理（INI/JSON）
-- ✅ 構造化ログ
-- ✅ フレームシリアライズ/デシリアライズ
-- ✅ CRC32チェックサム
-- ✅ ハートビートフレーム
-- ✅ TPL Dataflowパイプライン
-- ✅ リトライポリシー
-- ✅ 隔離機能
+**タスク 1-3: SecurityService.cs の実装完成**
 
-**モック実装（15%）:**
-- ⚠️ セキュリティスキャン（YARAスキャン）
-
-**未実装・必須（20%）:**
-- 🔴 AES-256-GCM暗号化
-- 🔴 プロトコル解析（FTP/PostgreSQL）
-- 🔴 SQLインジェクション検出
-- 🔴 ClamAV統合
-
-**未実装・オプション（5%）:**
-- 🔵 Session ID管理
-- 🔵 Versionフィールド
-- 🔵 SequenceNumber拡張
-
----
-
-## 10. 次のステップ（Stage 4への移行）
-
-### 10.1 実装計画
-
-**Phase 1（2週間）:**
-1. CryptoService実装（AES-256-GCM）
-2. FrameServiceへの暗号化統合
-3. YARAスキャン実装
-4. SecurityServiceの完成
-
-**Phase 2（2週間）:**
-5. ProtocolAnalyzer実装
-6. FTP/PostgreSQL解析機能
-7. SQLInjectionDetector実装
-
-**Phase 3（1週間）:**
-8. 統合テスト
-9. パフォーマンステスト
-10. ドキュメント更新
-
-### 10.2 プルリクエスト戦略
-
-- **PR #1**: CryptoService + 暗号化統合
-- **PR #2**: YARAスキャン + SecurityService完成
-- **PR #3**: ProtocolAnalyzer + FTP/PostgreSQL解析
-- **PR #4**: SQLInjectionDetector + 統合テスト
-
----
-
-## 付録A: 既存コード分析結果
-
-### A.1 調査済みファイル一覧
-
-```
-✅ src/NonIPFileDelivery/Program.cs (274行)
-✅ src/NonIPFileDelivery/Models/FrameProtocol.cs (69行)
-✅ src/NonIPFileDelivery/Models/Configuration.cs (48行)
-✅ src/NonIPFileDelivery/Services/FrameService.cs (211行)
-✅ src/NonIPFileDelivery/Services/SecurityService.cs (195行)
-⏳ src/NonIPFileDelivery/Services/NetworkService.cs (要確認)
-⏳ src/NonIPFileDelivery/Services/NonIPFileDeliveryService.cs (要確認)
-⏳ src/NonIPFileDelivery/Services/PacketProcessingPipeline.cs (要確認)
-⏳ src/NonIPFileDelivery/NonIPFileDelivery.csproj (要確認)
+```csharp
+// Services/SecurityService.cs (ScanData メソッドの実装)
+public async Task<ScanResult> ScanData(byte[] data, string fileName)
+{
+    var stopwatch = Stopwatch.StartNew();
+    var result = new ScanResult { IsClean = true };
+    
+    try
+    {
+        // YARAスキャン実装
+        var yaraScanner = new YARAScanner(_config.YARARulesPath);
+        var yaraResult = await yaraScanner.ScanAsync(data, _config.ScanTimeout);
+        
+        if (yaraResult.IsMatch)
+        {
+            result.IsClean = false;
+            result.ThreatName = yaraResult.RuleName;
+            result.Details = $"YARA rule matched: {yaraResult.RuleName}";
+            _logger.Warning($"Threat detected in {fileName}: {result.ThreatName}");
+            return result;
+        }
+        
+        // ClamAV統合
+        if (_config.UseClamAV)
+        {
+            var clamAvScanner = new ClamAVScanner(_config.ClamAVSocket);
+            var clamAvResult = await clamAvScanner.ScanAsync(data, _config.ScanTimeout);
+            
+            if (!clamAvResult.IsClean)
+            {
+                result.IsClean = false;
+                result.ThreatName = clamAvResult.VirusName;
+                result.Details = $"ClamAV detected: {clamAvResult.VirusName}";
+                _logger.Warning($"Threat detected in {fileName}: {result.ThreatName}");
+                return result;
+            }
+        }
+        
+        _logger.Debug($"File {fileName} is clean");
+        result.Details = "No threats detected";
+    }
+    catch (Exception ex)
+    {
+        _logger.Error($"Error scanning {fileName}", ex);
+        result.IsClean = false;
+        result.Details = $"Scan error: {ex.Message}";
+    }
+    finally
+    {
+        stopwatch.Stop();
+        result.ScanDuration = stopwatch.Elapsed;
+    }
+    
+    return result;
+}
 ```
 
-### A.2 推奨される開発環境
+**タスク 1-4: NuGetパッケージの追加**
 
-- **OS**: Windows 10/11 または Windows Server 2019/2022
-- **IDE**: Visual Studio 2022
-- **.NET SDK**: .NET 8.0
-- **Npcap**: 1.78以降
-- **追加ツール**: Git, NuGet Package Manager
+```xml
+<!-- NonIPFileDelivery.csproj に追加 -->
+<ItemGroup>
+  <PackageReference Include="libyara.NET" Version="4.3.0" />
+  <!-- ClamAV用（必要に応じて） -->
+</ItemGroup>
+```
+
+#### **Phase 2: プロトコル解析機能追加**
+
+**タスク 2-1: ProtocolAnalyzer.cs の新規作成**
+
+```csharp
+// Services/IProtocolAnalyzer.cs
+public interface IProtocolAnalyzer
+{
+    ProtocolType DetectProtocol(byte[] packet);
+    FTPCommand? ParseFTP(byte[] packet);
+    PostgreSQLMessage? ParsePostgreSQL(byte[] packet);
+}
+
+// Services/ProtocolAnalyzer.cs
+public class ProtocolAnalyzer : IProtocolAnalyzer
+{
+    private readonly ILogger<ProtocolAnalyzer> _logger;
+    
+    public ProtocolType DetectProtocol(byte[] packet)
+    {
+        // TCPポート番号で判定
+        // 21 -> FTP, 22 -> SFTP, 5432 -> PostgreSQL
+    }
+    
+    public FTPCommand? ParseFTP(byte[] packet)
+    {
+        // FTPコマンド解析
+        // USER, PASS, RETR, STOR等
+    }
+    
+    public PostgreSQLMessage? ParsePostgreSQL(byte[] packet)
+    {
+        // PostgreSQLワイヤプロトコル解析
+        // Query, Parse, Bind等
+    }
+}
+```
+
+**タスク 2-2: SQLInjectionDetector.cs の新規作成**
+
+```csharp
+// Services/ISQLInjectionDetector.cs
+public interface ISQLInjectionDetector
+{
+    bool Detect(string sqlQuery);
+    bool IsDangerousSQL(string sqlQuery);
+}
+
+// Services/SQLInjectionDetector.cs
+public class SQLInjectionDetector : ISQLInjectionDetector
+{
+    private readonly ILogger<SQLInjectionDetector> _logger;
+    private readonly Regex[] _injectionPatterns;
+    private readonly string[] _dangerousKeywords;
+    
+    public bool Detect(string sqlQuery)
+    {
+        // SQLインジェクションパターン検出
+        // OR 1=1, '; DROP, UNION SELECT等
+    }
+    
+    public bool IsDangerousSQL(string sqlQuery)
+    {
+        // 危険なSQL文の検出
+        // DROP TABLE, DELETE FROM without WHERE等
+    }
+}
+```
+
+#### **Phase 3: フレーム構造の拡張（オプション）**
+
+**タスク 3-1: FrameHeader の拡張**
+
+```csharp
+// Models/FrameProtocol.cs (拡張版)
+public class FrameHeader
+{
+    public byte[] DestinationMac { get; set; } = new byte[6];
+    public byte[] SourceMac { get; set; } = new byte[6];
+    public ushort EtherType { get; set; } = 0x88B5;
+    
+    public byte Version { get; set; } = 0x01;        // 追加
+    public FrameType Type { get; set; }
+    public ushort SequenceNumber { get; set; }       // または uint に変更
+    public ushort PayloadLength { get; set; }        // または uint に変更
+    public FrameFlags Flags { get; set; }
+    
+    public Guid SessionID { get; set; }              // 追加（オプション）
+}
+```
 
 ---
 
-**基本設計書完了（既存実装統合版）。Stage 4（実装フェーズ）に進む準備が整いました。**
+## 12. まとめ
+
+### 12.1 既存実装の評価サマリー
+
+**✅ 実装済み（高品質）:**
+- コマンドライン引数解析、INI/JSON設定、構造化ログ、リトライポリシー
+- カスタムフレーム構造、CRC32チェックサム、シーケンス番号管理
+- TPL Dataflowパイプライン、統計情報自動収集
+- Graceful Shutdown、ハートビート機能
+
+**🟡 モック実装（実装完成が必要）:**
+- セキュリティスキャン（YARAスキャン、ClamAV統合）
+
+**🔴 未実装（追加が必要）:**
+- AES-256-GCM暗号化
+- FTP/PostgreSQLプロトコル解析
+- SQLインジェクション検出
+
+### 12.2 Stage 4 実装の優先順位
+
+1. **Phase 1（最優先）**: AES-256-GCM暗号化 + YARAスキャン実装
+2. **Phase 2（高優先）**: FTP/PostgreSQL解析 + SQLインジェクション検出
+3. **Phase 3（オプション）**: フレーム構造拡張（Session ID追加等）
 
 ---
 
-## 改訂履歴
+**本ドキュメントは、Stage 3.5（既存コード分析）完了時点の内容を反映しています。**
+**Stage 4（実装）に進む際は、本ドキュメントのPhase 1から順次実装を開始してください。**
 
-| バージョン | 日付 | 変更内容 |
-|-----------|------|---------|
-| 1.0 | 2025-09-30 | 初版作成（Stage 2設計） |
-| 2.0 | 2025-10-02 | 既存実装統合版（Stage 3.5分析結果反映） |
+---
+
+**変更履歴:**
+
+| 日付 | バージョン | 変更内容 |
+|------|----------|---------|
+| 2025-10-02 | 2.0 | 既存実装（v1.1.0）の分析結果を反映 |
+
+---
+
+**作成者**: InvestorX  
+**リポジトリ**: https://github.com/InvestorX/Non-IP-File-Delivery  
+**ライセンス**: Sushi-Ware License
