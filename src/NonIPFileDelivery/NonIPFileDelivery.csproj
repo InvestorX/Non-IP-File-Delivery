@@ -13,6 +13,16 @@
     <PackageReference Include="SharpPcap" Version="6.2.5" />
     <PackageReference Include="PacketDotNet" Version="1.4.7" />
 
+    <!-- YARA統合 -->
+    <PackageReference Include="dnYara" Version="2.1.0" />
+    
+    <!-- SSH/SFTP -->
+    <PackageReference Include="SSH.NET" Version="2024.2.0" />
+    
+    <!-- 非同期I/O高速化 -->
+    <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
+    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
+
     <!-- 構造化ロギング -->
     <PackageReference Include="Serilog" Version="3.1.1" />
     <PackageReference Include="Serilog.Extensions.Logging" Version="8.0.0" />

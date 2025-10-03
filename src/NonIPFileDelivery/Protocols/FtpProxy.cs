@@ -1,6 +1,7 @@
 using NonIpFileDelivery.Core;
 using NonIpFileDelivery.Security;
 using Serilog;
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
