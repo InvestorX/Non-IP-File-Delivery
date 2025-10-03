@@ -7,7 +7,8 @@ using Microsoft.Extensions.Configuration;
 namespace NonIpFileDelivery;
 
 /// <summary>
-/// 非IP送受信機のメインエントリーポイント
+/// 非IP送受信機のメインエントリーポイント（統合版）
+/// FTP/SFTP/PostgreSQL完全対応
 /// </summary>
 class Program
 {
@@ -16,12 +17,18 @@ class Program
         // ロギング初期化
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
-            .WriteTo.Console()
-            .WriteTo.File("logs/non-ip-file-delivery-.log", rollingInterval: RollingInterval.Day)
+            .WriteTo.Console(
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.File(
+                "logs/non-ip-file-delivery-.log",
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 30,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
 
         Log.Information("========================================");
-        Log.Information("Non-IP File Delivery System Starting...");
+        Log.Information("Non-IP File Delivery System v1.0");
+        Log.Information("FTP/SFTP/PostgreSQL Proxy with Security Inspection");
         Log.Information("========================================");
 
         try
@@ -38,80 +45,92 @@ class Program
                 ?? throw new Exception("RemoteMacAddress not configured");
             var yaraRulesPath = config["Security:YaraRulesPath"] ?? "rules/*.yar";
 
-            // プロトコル有効化設定
-            var ftpEnabled = config.GetValue<bool>("Protocols:Ftp:Enabled", true);
-            var sftpEnabled = config.GetValue<bool>("Protocols:Sftp:Enabled", false);
-            var postgresqlEnabled = config.GetValue<bool>("Protocols:Postgresql:Enabled", false);
+            // YARAルールファイル取得
+            var yaraFiles = Directory.Exists(Path.GetDirectoryName(yaraRulesPath))
+                ? Directory.GetFiles(Path.GetDirectoryName(yaraRulesPath)!, 
+                                   Path.GetFileName(yaraRulesPath))
+                : Array.Empty<string>();
+
+            if (yaraFiles.Length == 0)
+            {
+                Log.Warning("No YARA rules found at {Path}. Security inspection will be limited.",
+                    yaraRulesPath);
+            }
 
             // コンポーネント初期化
+            Log.Information("Initializing components...");
+
             using var transceiver = new RawEthernetTransceiver(interfaceName, remoteMac);
-            using var inspector = new SecurityInspector(Directory.GetFiles(yaraRulesPath));
+            using var inspector = yaraFiles.Length > 0 
+                ? new SecurityInspector(yaraFiles) 
+                : null;
 
-            // プロキシサービス初期化
-            FtpProxy? ftpProxy = null;
-            SftpProxy? sftpProxy = null;
-            PostgresqlProxy? postgresqlProxy = null;
+            // プロトコルプロキシ初期化
+            var ftpEnabled = config.GetValue<bool>("Protocols:Ftp:Enabled", true);
+            var sftpEnabled = config.GetValue<bool>("Protocols:Sftp:Enabled", true);
+            var postgresqlEnabled = config.GetValue<bool>("Protocols:Postgresql:Enabled", true);
 
-            if (ftpEnabled)
-            {
-                ftpProxy = new FtpProxy(
+            using var ftpProxy = ftpEnabled && inspector != null
+                ? new FtpProxy(
                     transceiver,
                     inspector,
                     config.GetValue<int>("Protocols:Ftp:ListenPort", 21),
                     config["Protocols:Ftp:TargetHost"] ?? "192.168.1.100",
-                    config.GetValue<int>("Protocols:Ftp:TargetPort", 21)
-                );
-            }
+                    config.GetValue<int>("Protocols:Ftp:TargetPort", 21))
+                : null;
 
-            if (sftpEnabled)
-            {
-                sftpProxy = new SftpProxy(
+            using var sftpProxy = sftpEnabled && inspector != null
+                ? new SftpProxy(
                     transceiver,
                     inspector,
                     config.GetValue<int>("Protocols:Sftp:ListenPort", 22),
                     config["Protocols:Sftp:TargetHost"] ?? "192.168.1.100",
-                    config.GetValue<int>("Protocols:Sftp:TargetPort", 22),
-                    config["Protocols:Sftp:Username"] ?? "sftpuser",
-                    config["Protocols:Sftp:Password"] ?? "password"
-                );
-            }
+                    config.GetValue<int>("Protocols:Sftp:TargetPort", 22))
+                : null;
 
-            if (postgresqlEnabled)
-            {
-                postgresqlProxy = new PostgresqlProxy(
+            using var postgresqlProxy = postgresqlEnabled && inspector != null
+                ? new PostgreSqlProxy(
                     transceiver,
                     inspector,
                     config.GetValue<int>("Protocols:Postgresql:ListenPort", 5432),
                     config["Protocols:Postgresql:TargetHost"] ?? "192.168.1.100",
-                    config.GetValue<int>("Protocols:Postgresql:TargetPort", 5432)
-                );
-            }
+                    config.GetValue<int>("Protocols:Postgresql:TargetPort", 5432))
+                : null;
 
             // 起動
+            Log.Information("Starting services...");
             transceiver.Start();
 
-            if (ftpEnabled && ftpProxy != null)
+            var tasks = new List<Task>();
+
+            if (ftpProxy != null)
             {
-                await ftpProxy.StartAsync();
-                Log.Information("FTP Proxy service started");
+                tasks.Add(ftpProxy.StartAsync());
+                Log.Information("✓ FTP Proxy enabled on port {Port}", 
+                    config.GetValue<int>("Protocols:Ftp:ListenPort", 21));
             }
 
-            if (sftpEnabled && sftpProxy != null)
+            if (sftpProxy != null)
             {
-                await sftpProxy.StartAsync();
-                Log.Information("SFTP Proxy service started");
+                tasks.Add(sftpProxy.StartAsync());
+                Log.Information("✓ SFTP Proxy enabled on port {Port}",
+                    config.GetValue<int>("Protocols:Sftp:ListenPort", 22));
             }
 
-            if (postgresqlEnabled && postgresqlProxy != null)
+            if (postgresqlProxy != null)
             {
-                await postgresqlProxy.StartAsync();
-                Log.Information("PostgreSQL Proxy service started");
+                tasks.Add(postgresqlProxy.StartAsync());
+                Log.Information("✓ PostgreSQL Proxy enabled on port {Port}",
+                    config.GetValue<int>("Protocols:Postgresql:ListenPort", 5432));
             }
 
+            await Task.WhenAll(tasks);
+
+            Log.Information("========================================");
             Log.Information("All services started successfully");
-            Log.Information("Enabled protocols: FTP={FtpEnabled}, SFTP={SftpEnabled}, PostgreSQL={PostgresqlEnabled}",
-                ftpEnabled, sftpEnabled, postgresqlEnabled);
+            Log.Information("System ready for secure file transfer");
             Log.Information("Press Ctrl+C to shutdown...");
+            Log.Information("========================================");
 
             // シャットダウン待機
             var cts = new CancellationTokenSource();
@@ -119,15 +138,14 @@ class Program
             {
                 e.Cancel = true;
                 cts.Cancel();
-                Log.Information("Shutdown signal received");
+                Log.Information("Shutdown signal received, stopping services...");
             };
 
             await Task.Delay(Timeout.Infinite, cts.Token);
-
-            // クリーンアップ
-            ftpProxy?.Dispose();
-            sftpProxy?.Dispose();
-            postgresqlProxy?.Dispose();
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Information("System shutdown initiated");
         }
         catch (Exception ex)
         {
@@ -136,8 +154,9 @@ class Program
         }
         finally
         {
-            // 脅威統計を出力
+            Log.Information("========================================");
             Log.Information("Non-IP File Delivery System stopped");
+            Log.Information("========================================");
             Log.CloseAndFlush();
         }
     }
