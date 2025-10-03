@@ -17,6 +17,9 @@
     <!-- YARA統合 -->
     <PackageReference Include="dnYara" Version="4.2.0" />
     
+    <!-- SSH/SFTP -->
+    <PackageReference Include="SSH.NET" Version="2024.2.0" />
+    
     <!-- 非同期I/O高速化 -->
     <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
