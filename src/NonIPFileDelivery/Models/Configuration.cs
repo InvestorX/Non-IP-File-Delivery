@@ -45,4 +45,9 @@ public class RedundancyConfig
     public int HeartbeatInterval { get; set; } = 1000;
     public int FailoverTimeout { get; set; } = 5000;
     public string DataSyncMode { get; set; } = "realtime";
+    public string? PrimaryNode { get; set; }
+    public string? StandbyNode { get; set; }
+    public string? VirtualIP { get; set; }
+    public string[]? Nodes { get; set; }
+    public string Algorithm { get; set; } = "RoundRobin";
 }
