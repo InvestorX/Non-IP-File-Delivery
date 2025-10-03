@@ -77,7 +77,11 @@ public class SecureEthernetFrame
 
         // ペイロードを暗号化
         frame.EncryptedPayload = cryptoEngine.Encrypt(plainPayload, associatedData);
-        frame.Header.PayloadLength = (uint)frame.EncryptedPayload.Length;
+        
+        // PayloadLengthを設定するために一度ヘッダーをコピーして変更
+        var header = frame.Header;
+        header.PayloadLength = (uint)frame.EncryptedPayload.Length;
+        frame.Header = header;
 
         // CRC32チェックサムを計算（全体の整合性検証）
         frame.Crc32 = CalculateCrc32(frame);
@@ -220,7 +224,7 @@ public class SecureEthernetFrame
     /// </summary>
     private static uint CalculateCrc32(SecureEthernetFrame frame)
     {
-        using var crc32 = new System.IO.Hashing.Crc32();
+        var crc32 = new System.IO.Hashing.Crc32();
 
         var headerBytes = SerializeHeader(frame.Header);
         crc32.Append(headerBytes);
