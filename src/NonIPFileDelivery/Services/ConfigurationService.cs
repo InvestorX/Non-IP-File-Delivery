@@ -218,4 +218,131 @@ public class ConfigurationService : IConfigurationService
 
         return await Task.Run(() => LoadFromJson(path), ct);
     }
+
+    /// <summary>
+    /// 設定をファイルに保存
+    /// </summary>
+    public void SaveConfiguration(Configuration config, string configPath)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentException.ThrowIfNullOrWhiteSpace(configPath);
+        
+        var ext = Path.GetExtension(configPath).ToLowerInvariant();
+        
+        if (ext == ".json")
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(config, 
+                new System.Text.Json.JsonSerializerOptions 
+                { 
+                    WriteIndented = true,
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+                });
+            File.WriteAllText(configPath, json, Encoding.UTF8);
+        }
+        else if (ext == ".ini")
+        {
+            // INI形式での保存実装
+            var ini = new StringBuilder();
+            
+            ini.AppendLine("[General]");
+            ini.AppendLine($"Mode={config.General?.Mode ?? "ActiveStandby"}");
+            ini.AppendLine($"LogLevel={config.General?.LogLevel ?? "Warning"}");
+            ini.AppendLine();
+            
+            ini.AppendLine("[Network]");
+            ini.AppendLine($"Interface={config.Network?.Interface ?? "eth0"}");
+            ini.AppendLine($"FrameSize={config.Network?.FrameSize ?? 9000}");
+            ini.AppendLine($"Encryption={config.Network?.Encryption ?? true}");
+            ini.AppendLine($"EtherType={config.Network?.EtherType ?? "0x88B5"}");
+            ini.AppendLine();
+            
+            ini.AppendLine("[Security]");
+            ini.AppendLine($"EnableVirusScan={config.Security?.EnableVirusScan ?? true}");
+            ini.AppendLine($"ScanTimeout={config.Security?.ScanTimeout ?? 5000}");
+            ini.AppendLine($"QuarantinePath={config.Security?.QuarantinePath ?? "C:\\NonIP\\Quarantine"}");
+            ini.AppendLine($"PolicyFile={config.Security?.PolicyFile ?? "security_policy.ini"}");
+            ini.AppendLine();
+            
+            ini.AppendLine("[Performance]");
+            ini.AppendLine($"MaxMemoryMB={config.Performance?.MaxMemoryMB ?? 8192}");
+            ini.AppendLine($"BufferSize={config.Performance?.BufferSize ?? 65536}");
+            ini.AppendLine($"ThreadPool={config.Performance?.ThreadPool ?? "auto"}");
+            ini.AppendLine();
+            
+            ini.AppendLine("[Redundancy]");
+            ini.AppendLine($"HeartbeatInterval={config.Redundancy?.HeartbeatInterval ?? 1000}");
+            ini.AppendLine($"FailoverTimeout={config.Redundancy?.FailoverTimeout ?? 5000}");
+            ini.AppendLine($"DataSyncMode={config.Redundancy?.DataSyncMode ?? "realtime"}");
+            
+            File.WriteAllText(configPath, ini.ToString(), Encoding.UTF8);
+        }
+        else
+        {
+            throw new NotSupportedException($"Unsupported configuration file format: {ext}");
+        }
+    }
+
+    /// <summary>
+    /// 設定の妥当性を検証
+    /// </summary>
+    public bool ValidateConfiguration(Configuration config)
+    {
+        if (config == null) return false;
+        
+        // General 検証
+        if (config.General != null)
+        {
+            var validModes = new[] { "ActiveStandby", "LoadBalancing", "Standalone" };
+            if (!string.IsNullOrWhiteSpace(config.General.Mode) && 
+                !validModes.Contains(config.General.Mode))
+            {
+                return false;
+            }
+        }
+        
+        // Network 検証
+        if (config.Network != null)
+        {
+            if (config.Network.FrameSize <= 0 || config.Network.FrameSize > 9000)
+                return false;
+            
+            if (string.IsNullOrWhiteSpace(config.Network.Interface))
+                return false;
+        }
+        
+        // Security 検証
+        if (config.Security != null)
+        {
+            if (config.Security.ScanTimeout < 0)
+                return false;
+            
+            if (config.Security.EnableVirusScan && 
+                string.IsNullOrWhiteSpace(config.Security.QuarantinePath))
+            {
+                return false;
+            }
+        }
+        
+        // Performance 検証
+        if (config.Performance != null)
+        {
+            if (config.Performance.MaxMemoryMB <= 0 || config.Performance.MaxMemoryMB > 65536)
+                return false;
+            
+            if (config.Performance.BufferSize <= 0)
+                return false;
+        }
+        
+        // Redundancy 検証
+        if (config.Redundancy != null)
+        {
+            if (config.Redundancy.HeartbeatInterval < 100)
+                return false;
+            
+            if (config.Redundancy.FailoverTimeout < config.Redundancy.HeartbeatInterval)
+                return false;
+        }
+        
+        return true;
+    }
 }

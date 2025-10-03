@@ -96,12 +96,10 @@ class Program
                     ("Encryption", configuration.Network.Encryption));
             }
 
-            var frameService = new FrameService(_logger);
+            var cryptoService = new CryptoService(_logger);
+            var frameService = new FrameService(_logger, cryptoService);
             var networkService = new NetworkService(_logger, frameService);
             var securityService = new SecurityService(_logger);
-
-            _pipeline = new PacketProcessingPipeline(_logger, frameService, securityService);
-            _pipeline.Initialize();
 
             _mainService = new NonIPFileDeliveryService(_logger, configService, networkService, securityService, frameService);
 

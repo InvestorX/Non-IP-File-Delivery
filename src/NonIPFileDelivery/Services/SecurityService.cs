@@ -11,14 +11,28 @@ namespace NonIPFileDelivery.Services
     public class SecurityService : ISecurityService
     {
         private readonly ILoggingService _logger;
-        private readonly SecurityConfig _config;
+        private SecurityConfig _config;
         private YARAScanner? _yaraScanner;      // 🆕 追加
         private ClamAVScanner? _clamAvScanner;  // 🆕 追加
+
+        /// <summary>
+        /// セキュリティ機能が有効かどうか
+        /// </summary>
+        public bool IsSecurityEnabled { get; private set; } = true;
 
         public SecurityService(ILoggingService logger)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _config = new SecurityConfig(); // デフォルト設定
+        }
+
+        /// <summary>
+        /// セキュリティ機能の有効/無効を設定
+        /// </summary>
+        public void SetSecurityEnabled(bool enabled)
+        {
+            IsSecurityEnabled = enabled;
+            _logger.Info($"Security features {(enabled ? "enabled" : "disabled")}");
         }
 
         /// <summary>
