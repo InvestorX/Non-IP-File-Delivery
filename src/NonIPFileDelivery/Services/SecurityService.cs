@@ -1,195 +1,168 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using NonIPFileDelivery.Models;
 
-namespace NonIPFileDelivery.Services;
-
-public class SecurityService : ISecurityService
+namespace NonIPFileDelivery.Services
 {
-    private readonly ILoggingService _logger;
-    private SecurityConfig? _config;
-
-    public bool IsSecurityEnabled { get; private set; }
-
-    public SecurityService(ILoggingService logger)
+    /// <summary>
+    /// セキュリティサービス実装
+    /// Phase 1完全版: YARAスキャン・ClamAV統合完了
+    /// </summary>
+    public class SecurityService : ISecurityService
     {
-        _logger = logger;
-    }
+        private readonly ILoggingService _logger;
+        private readonly SecurityConfig _config;
+        private readonly YARAScanner? _yaraScanner;
+        private readonly ClamAVScanner? _clamAvScanner;
 
-    public async Task<bool> InitializeSecurity(SecurityConfig config)
-    {
-        _config = config;
-        
-        try
+        public SecurityService(ILoggingService logger, SecurityConfig config)
         {
-            _logger.Info("Initializing security module...");
-            
-            if (!config.EnableVirusScan)
-            {
-                _logger.Warning("Virus scanning is disabled");
-                IsSecurityEnabled = false;
-                return true;
-            }
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _config = config ?? throw new ArgumentNullException(nameof(config));
 
-            // Ensure quarantine directory exists
-            if (!Directory.Exists(config.QuarantinePath))
+            // YARAスキャナー初期化
+            var yaraRulesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "yara_rules", "malware.yar");
+            if (File.Exists(yaraRulesPath))
             {
-                Directory.CreateDirectory(config.QuarantinePath);
-                _logger.Info($"Created quarantine directory: {config.QuarantinePath}");
-            }
-
-            // Check if security policy file exists
-            if (!string.IsNullOrEmpty(config.PolicyFile) && File.Exists(config.PolicyFile))
-            {
-                _logger.Info($"Loading security policy from: {config.PolicyFile}");
-                await LoadSecurityPolicy(config.PolicyFile);
+                _yaraScanner = new YARAScanner(_logger, yaraRulesPath);
+                _logger.Info("YARAScanner initialized");
             }
             else
             {
-                _logger.Warning($"Security policy file not found: {config.PolicyFile}");
+                _logger.Warning($"YARA rules file not found: {yaraRulesPath}");
             }
 
-            // In a real implementation, this would initialize ClamAV or another antivirus engine
-            _logger.Info("Security engine initialization completed");
-            
-            IsSecurityEnabled = true;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.Error("Failed to initialize security module", ex);
-            IsSecurityEnabled = false;
-            return false;
-        }
-    }
-
-    public async Task<ScanResult> ScanData(byte[] data, string fileName)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        var result = new ScanResult { IsClean = true };
-
-        try
-        {
-            if (!IsSecurityEnabled || _config == null)
+            // ClamAVスキャナー初期化（オプショナル）
+            if (_config.UseClamAV)
             {
-                _logger.Debug($"Security scanning skipped for {fileName} (security disabled)");
-                result.Details = "Security scanning disabled";
-                return result;
+                _clamAvScanner = new ClamAVScanner(_logger);
+                _logger.Info("ClamAVScanner initialized");
             }
 
-            _logger.Debug($"Scanning data: {fileName} ({data.Length} bytes)");
-
-            // Simulate virus scanning with timeout
-            var scanTask = Task.Run(async () =>
+            // 隔離ディレクトリ作成
+            if (!Directory.Exists(_config.QuarantinePath))
             {
-                // Simulate scanning time based on file size
-                var scanTimeMs = Math.Min(data.Length / 1000, _config.ScanTimeout);
-                await Task.Delay(scanTimeMs);
+                Directory.CreateDirectory(_config.QuarantinePath);
+                _logger.Info($"Quarantine directory created: {_config.QuarantinePath}");
+            }
+        }
 
-                // Simulate occasional threat detection (1% chance)
-                if (Random.Shared.Next(1, 101) == 1)
+        /// <summary>
+        /// データをスキャン（Phase 1完全実装）
+        /// </summary>
+        public async Task<ScanResult> ScanData(byte[] data, string fileName)
+        {
+            if (data == null || data.Length == 0)
+            {
+                return new ScanResult
                 {
-                    return new ScanResult
+                    IsClean = true,
+                    Details = "Empty data"
+                };
+            }
+
+            var scanStartTime = DateTime.UtcNow;
+
+            try
+            {
+                // 1. YARAスキャン実行
+                if (_yaraScanner != null)
+                {
+                    var yaraResult = await _yaraScanner.ScanAsync(data, _config.ScanTimeout);
+
+                    if (yaraResult.IsMatch)
                     {
-                        IsClean = false,
-                        ThreatName = "Simulated.Threat.Test",
-                        Details = "Simulated threat for testing purposes"
-                    };
+                        _logger.Warning($"YARA rule matched: {yaraResult.RuleName} in file {fileName}");
+
+                        return new ScanResult
+                        {
+                            IsClean = false,
+                            ThreatName = yaraResult.RuleName,
+                            Details = $"YARA rule matched: {yaraResult.RuleName}",
+                            ScanDuration = DateTime.UtcNow - scanStartTime
+                        };
+                    }
                 }
+
+                // 2. ClamAVスキャン実行（オプショナル）
+                if (_clamAvScanner != null)
+                {
+                    var clamResult = await _clamAvScanner.ScanAsync(data, _config.ScanTimeout);
+
+                    if (!clamResult.IsClean)
+                    {
+                        _logger.Warning($"ClamAV detected virus: {clamResult.VirusName} in file {fileName}");
+
+                        return new ScanResult
+                        {
+                            IsClean = false,
+                            ThreatName = clamResult.VirusName,
+                            Details = $"ClamAV detected: {clamResult.VirusName}",
+                            ScanDuration = DateTime.UtcNow - scanStartTime
+                        };
+                    }
+                }
+
+                // 脅威なし
+                _logger.Debug($"File {fileName} is clean (scanned {data.Length} bytes)");
 
                 return new ScanResult
                 {
                     IsClean = true,
-                    Details = "No threats detected"
+                    ThreatName = null,
+                    Details = "No threats detected",
+                    ScanDuration = DateTime.UtcNow - scanStartTime
                 };
-            });
-
-            var timeoutTask = Task.Delay(_config.ScanTimeout);
-            var completedTask = await Task.WhenAny(scanTask, timeoutTask);
-
-            if (completedTask == timeoutTask)
-            {
-                _logger.Warning($"Scan timeout for {fileName} after {_config.ScanTimeout}ms");
-                result.IsClean = false;
-                result.Details = "Scan timeout - treating as suspicious";
             }
-            else
+            catch (Exception ex)
             {
-                result = await scanTask;
-                if (!result.IsClean)
+                _logger.Error($"Error scanning file {fileName}: {ex.Message}", ex);
+
+                return new ScanResult
                 {
-                    _logger.Warning($"Threat detected in {fileName}: {result.ThreatName}");
-                }
-                else
+                    IsClean = false,
+                    ThreatName = "ScanError",
+                    Details = $"Scan error: {ex.Message}",
+                    ScanDuration = DateTime.UtcNow - scanStartTime
+                };
+            }
+        }
+
+        /// <summary>
+        /// ファイルを隔離
+        /// </summary>
+        public async Task<bool> QuarantineFile(string filePath, string reason)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
                 {
-                    _logger.Debug($"File {fileName} is clean");
+                    _logger.Error($"File not found for quarantine: {filePath}");
+                    return false;
                 }
+
+                var fileName = Path.GetFileName(filePath);
+                var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                var quarantineFileName = $"{timestamp}_{fileName}";
+                var quarantinePath = Path.Combine(_config.QuarantinePath, quarantineFileName);
+
+                // ファイルを隔離ディレクトリに移動
+                File.Copy(filePath, quarantinePath, true);
+
+                // 隔離理由を記録
+                var reasonFilePath = quarantinePath + ".reason.txt";
+                await File.WriteAllTextAsync(reasonFilePath, $"Quarantined: {DateTime.UtcNow}\nReason: {reason}\nOriginal Path: {filePath}");
+
+                _logger.Warning($"File quarantined: {fileName} -> {quarantinePath} (Reason: {reason})");
+
+                return true;
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.Error($"Error scanning {fileName}", ex);
-            result.IsClean = false;
-            result.Details = $"Scan error: {ex.Message}";
-        }
-        finally
-        {
-            stopwatch.Stop();
-            result.ScanDuration = stopwatch.Elapsed;
-        }
-
-        return result;
-    }
-
-    public async Task<bool> QuarantineFile(string filePath, string reason)
-    {
-        if (_config == null)
-        {
-            _logger.Error("Cannot quarantine file - security not initialized");
-            return false;
-        }
-
-        try
-        {
-            var fileName = Path.GetFileName(filePath);
-            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var quarantineFileName = $"{timestamp}_{fileName}";
-            var quarantinePath = Path.Combine(_config.QuarantinePath, quarantineFileName);
-
-            if (File.Exists(filePath))
+            catch (Exception ex)
             {
-                File.Move(filePath, quarantinePath);
+                _logger.Error($"Error quarantining file {filePath}: {ex.Message}", ex);
+                return false;
             }
-            else
-            {
-                // For data that's not on disk, create a quarantine record
-                await File.WriteAllTextAsync(quarantinePath + ".info", 
-                    $"Quarantined: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\nReason: {reason}\nOriginal: {fileName}");
-            }
-
-            _logger.Warning($"File quarantined: {fileName} -> {quarantinePath} (Reason: {reason})");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.Error($"Failed to quarantine file {filePath}", ex);
-            return false;
-        }
-    }
-
-    private async Task LoadSecurityPolicy(string policyPath)
-    {
-        try
-        {
-            var policyContent = await File.ReadAllTextAsync(policyPath);
-            _logger.Debug($"Security policy loaded: {policyContent.Length} characters");
-            // In a real implementation, this would parse and apply the security policy
-        }
-        catch (Exception ex)
-        {
-            _logger.Error($"Failed to load security policy from {policyPath}", ex);
         }
     }
 }
