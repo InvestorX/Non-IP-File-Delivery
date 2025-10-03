@@ -5,10 +5,15 @@
 [![License: Sushi-Ware](https://img.shields.io/badge/license-Sushi--Ware-orange.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-8.0-blue.svg)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows/)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
+[![Status](https://img.shields.io/badge/status-in%20development-yellow.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
+[![Tests](https://img.shields.io/badge/tests-not%20implemented-red.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
 
 ## 📋 概要
 
-Non-IP File Deliveryは、IP系プロトコルを使用しないセキュアなファイル転送システムです。Raw Ethernetを使用して独自プロトコルで通信し、リアルタイムセキュリティ検閲機能により、ハッカーやクラッカー、ランサムウェアからの攻撃を防御します。ただし、本プロジェクトはAIによって作られたので、動作保証ができません。
+Non-IP File Deliveryは、IP系プロトコルを使用しないセキュアなファイル転送システムです。Raw Ethernetを使用して独自プロトコルで通信し、リアルタイムセキュリティ検閲機能により、ハッカーやクラッカー、ランサムウェアからの攻撃を防御します。
+
+**⚠️ 重要**: 本プロジェクトは現在開発中であり、テストが実装されていないため、動作保証ができません。本プロジェクトはAIによって作られました。運用環境での使用は推奨されません。
 
 ### システム構成
 ```
@@ -589,13 +594,62 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 
 ## 🔄 更新履歴
 
+### 最新の状態（2025-01-10更新）
+
+#### ✅ 実装済み機能（Phase 1-2）
+- ✅ 基本的なRaw Ethernetフレーム送受信
+- ✅ FTPプロトコル解析（40種類以上のコマンド対応）
+- ✅ PostgreSQLプロトコル解析
+- ✅ SQLインジェクション検出（15種類のパターン）
+- ✅ AES-256-GCM暗号化/復号化
+- ✅ CRC32チェックサム検証
+- ✅ TPL Dataflowパイプライン処理
+- ✅ 構造化ログ（Serilog）
+- ✅ コンフィグ管理（INI/JSON）
+
+#### ⚠️ 部分実装・未検証の機能（Phase 2-3）
+- ⚠️ セッション管理機能（実装済み、未検証）
+- ⚠️ フラグメント処理（実装済み、未検証）
+- ⚠️ 再送制御（実装済み、未検証）
+- ⚠️ QoS機能（実装済み、未検証）
+- ⚠️ マルウェアスキャン（YARA、ClamAV連携は実装済みだが外部依存関係が未設定）
+- ⚠️ パフォーマンス要件（2Gbps、10ms以下）は未検証
+
+#### ❌ 未実装の機能
+- ❌ ユニットテスト（testsディレクトリが存在しない）
+- ❌ 統合テスト
+- ❌ パフォーマンステストの実行・検証
+- ❌ Web UI設定ツール完全版
+- ❌ 冗長化機能の実装・検証
+- ❌ 負荷分散機能の実装・検証
+
+#### 🔧 修正済みの問題（2025-01-10）
+- ✅ ビルドエラー18件を修正（プロジェクトはコンパイル可能）
+- ✅ Serilogパッケージの不足を解消（WithMachineName、WithThreadId）
+- ✅ インターフェース実装の不整合を修正
+- ✅ プロパティ名のtypo修正（SourceMac → SourceMAC）
+
+### ⚠️ 重要な注意事項
+**このプロジェクトは現在開発中であり、以下の制限があります：**
+
+1. **テストが存在しない**: ユニットテスト、統合テストが実装されていないため、動作保証ができません
+2. **性能未検証**: ドキュメントに記載されている性能要件（2Gbps、10ms以下）は実測値ではありません
+3. **外部依存関係の不足**: YARA、ClamAVなどの外部ライブラリが完全には統合されていません
+4. **運用環境での使用は推奨されません**: 十分なテストが完了していないため、実運用での使用は避けてください
+
 ### バージョン管理方針
 - 自動更新機能は提供しません
 - 手動更新のみ対応
 - セキュリティ更新は緊急リリース
 
 ### 今後の予定
+- [ ] ユニットテストの実装（目標カバレッジ80%以上）
+- [ ] 統合テストの実装
+- [ ] パフォーマンステストの実行と検証
+- [ ] 外部ライブラリの完全統合（YARA、ClamAV）
 - [ ] Web UI設定ツール完全版
+- [ ] 冗長化機能の実装・検証
+- [ ] 負荷分散機能の実装・検証
 - [ ] 追加セキュリティエンジン統合
 - [ ] クラウド連携機能
 - [ ] モバイル管理アプリ
