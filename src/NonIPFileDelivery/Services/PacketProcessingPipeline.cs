@@ -313,6 +313,22 @@ namespace NonIPFileDelivery.Services
             _logger.Info("PacketProcessingPipeline stopped");
         }
 
+        /// <summary>
+        /// パイプラインを完了（入力完了を通知し、処理待ち）
+        /// </summary>
+        public async Task CompleteAsync()
+        {
+            _logger.Info("Completing PacketProcessingPipeline...");
+
+            if (_captureBlock != null)
+            {
+                _captureBlock.Complete();
+                await _captureBlock.Completion;
+            }
+
+            _logger.Info("PacketProcessingPipeline completed");
+        }
+
         public void Dispose()
         {
             if (_disposed)
