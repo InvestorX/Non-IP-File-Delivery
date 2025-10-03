@@ -230,5 +230,21 @@ namespace NonIPFileDelivery.Services
 
             return "OTHER";
         }
+
+        /// <summary>
+        /// プロトコルタイプを検出（同期版）
+        /// </summary>
+        public ProtocolType DetectProtocol(byte[] packetData)
+        {
+            return ProtocolType.PostgreSQL;
+        }
+
+        /// <summary>
+        /// パケットを解析（同期版）
+        /// </summary>
+        public ProtocolAnalysisResult Analyze(byte[] packetData, ProtocolType protocolType)
+        {
+            return AnalyzePostgreSQLAsync(packetData).GetAwaiter().GetResult();
+        }
     }
 }

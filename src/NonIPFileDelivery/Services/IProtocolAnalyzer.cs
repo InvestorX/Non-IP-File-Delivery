@@ -22,6 +22,21 @@ namespace NonIPFileDelivery.Services
         /// <param name="port">ポート番号</param>
         /// <returns>解析可能な場合true</returns>
         bool CanAnalyze(int port);
+
+        /// <summary>
+        /// パケットデータからプロトコルタイプを検出（同期版）
+        /// </summary>
+        /// <param name="packetData">生パケットデータ</param>
+        /// <returns>検出されたプロトコルタイプ</returns>
+        ProtocolType DetectProtocol(byte[] packetData);
+
+        /// <summary>
+        /// パケットデータを解析（同期版）
+        /// </summary>
+        /// <param name="packetData">生パケットデータ</param>
+        /// <param name="protocolType">プロトコルタイプ</param>
+        /// <returns>解析結果</returns>
+        ProtocolAnalysisResult Analyze(byte[] packetData, ProtocolType protocolType);
     }
 
     /// <summary>

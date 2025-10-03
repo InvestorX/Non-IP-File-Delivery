@@ -311,7 +311,7 @@ public class NetworkService : INetworkService
                 
                 if (deserializedFrame != null)
                 {
-                    var sourceMacString = MacAddressToString(deserializedFrame.Header.SourceMac);
+                    var sourceMacString = MacAddressToString(deserializedFrame.Header.SourceMAC);
                     _logger.Debug($"Received frame: Type={deserializedFrame.Header.Type}, From={sourceMacString}, Seq={deserializedFrame.Header.SequenceNumber}");
                     
                     FrameReceived?.Invoke(this, new FrameReceivedEventArgs(serializedFrame, sourceMacString));

@@ -193,5 +193,94 @@ namespace NonIPFileDelivery.Services
                 { "SupportedProtocols", string.Join(", ", GetSupportedProtocols()) }
             };
         }
+
+        /// <summary>
+        /// パケットデータからプロトコルタイプを検出（同期版）
+        /// </summary>
+        public ProtocolType DetectProtocol(byte[] packetData)
+        {
+            if (packetData == null || packetData.Length < 20)
+            {
+                return ProtocolType.Unknown;
+            }
+
+            try
+            {
+                var destinationPort = ExtractDestinationPort(packetData);
+                var sourcePort = ExtractSourcePort(packetData);
+
+                // ポート番号ベースでプロトコル判定
+                if (_portAnalyzers.TryGetValue(destinationPort, out var dstAnalyzer))
+                {
+                    // 解析器のタイプからプロトコルタイプを推定
+                    foreach (var kvp in _protocolAnalyzers)
+                    {
+                        if (kvp.Value == dstAnalyzer)
+                            return kvp.Key;
+                    }
+                }
+                else if (_portAnalyzers.TryGetValue(sourcePort, out var srcAnalyzer))
+                {
+                    foreach (var kvp in _protocolAnalyzers)
+                    {
+                        if (kvp.Value == srcAnalyzer)
+                            return kvp.Key;
+                    }
+                }
+
+                return ProtocolType.Unknown;
+            }
+            catch
+            {
+                return ProtocolType.Unknown;
+            }
+        }
+
+        /// <summary>
+        /// パケットデータを解析（同期版）
+        /// </summary>
+        public ProtocolAnalysisResult Analyze(byte[] packetData, ProtocolType protocolType)
+        {
+            if (packetData == null || packetData.Length < 20)
+            {
+                return new ProtocolAnalysisResult
+                {
+                    Protocol = protocolType,
+                    IsValid = false,
+                    ErrorMessage = "Packet too short",
+                    DataSize = packetData?.Length ?? 0
+                };
+            }
+
+            try
+            {
+                if (_protocolAnalyzers.TryGetValue(protocolType, out var analyzer))
+                {
+                    // 非同期メソッドを同期的に実行（パフォーマンス最適化のため）
+                    var result = analyzer.AnalyzeAsync(packetData).GetAwaiter().GetResult();
+                    result.DataSize = packetData.Length;
+                    return result;
+                }
+
+                return new ProtocolAnalysisResult
+                {
+                    Protocol = protocolType,
+                    IsValid = false,
+                    ErrorMessage = $"No analyzer for {protocolType}",
+                    DataSize = packetData.Length
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Protocol analysis error: {ex.Message}", ex);
+                return new ProtocolAnalysisResult
+                {
+                    Protocol = protocolType,
+                    IsValid = false,
+                    ErrorMessage = ex.Message,
+                    DataSize = packetData.Length
+                };
+            }
+        }
     }
 }

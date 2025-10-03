@@ -43,6 +43,11 @@ namespace NonIPFileDelivery.Models
         /// 生データのサイズ（バイト）
         /// </summary>
         public int DataSize { get; set; }
+
+        /// <summary>
+        /// 抽出されたデータ（SQL文、FTPコマンド等）
+        /// </summary>
+        public string? ExtractedData { get; set; }
     }
 
     /// <summary>
@@ -171,5 +176,15 @@ namespace NonIPFileDelivery.Models
         /// 脅威であるか（ThreatLevel > Low）
         /// </summary>
         public bool IsThreat => ThreatLevel >= ThreatLevel.Medium;
+
+        /// <summary>
+        /// マッチしたパターン（DetectedPatternのエイリアス）
+        /// </summary>
+        public string? MatchedPattern => DetectedPattern;
+
+        /// <summary>
+        /// 説明（PatternDescriptionのエイリアス）
+        /// </summary>
+        public string? Description => PatternDescription;
     }
 }
