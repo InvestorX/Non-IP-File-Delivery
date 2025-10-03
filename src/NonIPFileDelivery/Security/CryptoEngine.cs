@@ -5,171 +5,115 @@ using Serilog;
 namespace NonIpFileDelivery.Security;
 
 /// <summary>
-/// AES-256-GCM暗号化エンジン
-/// Raw Ethernetフレームの暗号化・復号化・認証を担当
+/// AES-256-GCM認証付き暗号化エンジン
+/// Raw Ethernetフレームの機密性・完全性・真正性を保証
 /// </summary>
 public class CryptoEngine : IDisposable
 {
-    private readonly AesGcm _aesGcm;
     private readonly byte[] _masterKey;
+    private readonly RandomNumberGenerator _rng;
+    private long _nonceCounter;
     private readonly object _nonceLock = new();
-    private ulong _nonceCounter;
-
-    // AES-GCM標準仕様
-    private const int KEY_SIZE_BYTES = 32;      // 256ビット
-    private const int NONCE_SIZE_BYTES = 12;    // 96ビット（推奨）
-    private const int TAG_SIZE_BYTES = 16;      // 128ビット認証タグ
+    
+    // AES-GCMパラメータ
+    private const int KEY_SIZE_BYTES = 32;        // AES-256
+    private const int NONCE_SIZE_BYTES = 12;      // GCM推奨値
+    private const int TAG_SIZE_BYTES = 16;        // 128ビット認証タグ
+    private const int SALT_SIZE_BYTES = 32;       // PBKDF2ソルト
+    private const int PBKDF2_ITERATIONS = 100000; // NIST推奨値
 
     /// <summary>
-    /// 暗号化エンジンを初期化
+    /// パスワードから暗号化エンジンを初期化
     /// </summary>
-    /// <param name="masterKey">32バイトのマスターキー（AES-256）</param>
-    /// <param name="initialNonce">初期Nonce値（リプレイ攻撃対策）</param>
-    public CryptoEngine(byte[] masterKey, ulong initialNonce = 0)
+    /// <param name="password">マスターパスワード</param>
+    /// <param name="salt">ソルト（nullの場合はランダム生成）</param>
+    public CryptoEngine(string password, byte[]? salt = null)
     {
-        if (masterKey == null || masterKey.Length != KEY_SIZE_BYTES)
-        {
-            throw new ArgumentException($"Master key must be exactly {KEY_SIZE_BYTES} bytes (256 bits)", nameof(masterKey));
-        }
+        _rng = RandomNumberGenerator.Create();
+        
+        // ソルト生成またはロード
+        salt ??= GenerateSalt();
+        
+        // PBKDF2で鍵導出
+        _masterKey = DeriveKey(password, salt);
+        
+        // Nonceカウンターを初期化（タイムスタンプベース）
+        _nonceCounter = DateTimeOffset.UtcNow.ToUnixTimeSeconds() << 32;
+        
+        Log.Information("CryptoEngine initialized with AES-256-GCM");
+    }
+
+    /// <summary>
+    /// 既存の鍵から暗号化エンジンを初期化（鍵ローテーション用）
+    /// </summary>
+    /// <param name="masterKey">32バイトのマスターキー</param>
+    public CryptoEngine(byte[] masterKey)
+    {
+        if (masterKey.Length != KEY_SIZE_BYTES)
+            throw new ArgumentException($"Master key must be {KEY_SIZE_BYTES} bytes", nameof(masterKey));
 
         _masterKey = new byte[KEY_SIZE_BYTES];
         Array.Copy(masterKey, _masterKey, KEY_SIZE_BYTES);
-
-        _aesGcm = new AesGcm(_masterKey, TAG_SIZE_BYTES);
-        _nonceCounter = initialNonce;
-
-        Log.Information("CryptoEngine initialized with AES-256-GCM (Nonce start: {NonceStart})", initialNonce);
+        
+        _rng = RandomNumberGenerator.Create();
+        _nonceCounter = DateTimeOffset.UtcNow.ToUnixTimeSeconds() << 32;
+        
+        Log.Information("CryptoEngine initialized with provided master key");
     }
 
     /// <summary>
-    /// Windows DPAPIで保護されたキーファイルから初期化
-    /// </summary>
-    /// <param name="keyFilePath">暗号化されたキーファイルのパス</param>
-    /// <returns>CryptoEngineインスタンス</returns>
-    public static CryptoEngine FromProtectedKeyFile(string keyFilePath)
-    {
-        if (!File.Exists(keyFilePath))
-        {
-            throw new FileNotFoundException("Protected key file not found", keyFilePath);
-        }
-
-        try
-        {
-            // DPAPIで保護されたキーを読み込み
-            var encryptedKey = File.ReadAllBytes(keyFilePath);
-            var decryptedKey = ProtectedData.Unprotect(
-                encryptedKey,
-                null, // オプショナルエントロピー（必要に応じて設定）
-                DataProtectionScope.LocalMachine
-            );
-
-            if (decryptedKey.Length != KEY_SIZE_BYTES)
-            {
-                throw new CryptographicException($"Invalid key size: {decryptedKey.Length} bytes (expected {KEY_SIZE_BYTES})");
-            }
-
-            Log.Information("Loaded protected key from file: {KeyFile}", keyFilePath);
-            return new CryptoEngine(decryptedKey);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to load protected key file: {KeyFile}", keyFilePath);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// 新しいマスターキーを生成してDPAPI保護付きで保存
-    /// </summary>
-    /// <param name="keyFilePath">保存先パス</param>
-    public static void GenerateAndSaveProtectedKey(string keyFilePath)
-    {
-        // 暗号学的に安全な乱数生成器で256ビットキーを生成
-        var masterKey = new byte[KEY_SIZE_BYTES];
-        using (var rng = RandomNumberGenerator.Create())
-        {
-            rng.GetBytes(masterKey);
-        }
-
-        // Windows DPAPIで保護
-        var encryptedKey = ProtectedData.Protect(
-            masterKey,
-            null,
-            DataProtectionScope.LocalMachine
-        );
-
-        File.WriteAllBytes(keyFilePath, encryptedKey);
-
-        // キーのハッシュをログに記録（キー本体はログに出さない）
-        var keyHash = Convert.ToBase64String(SHA256.HashData(masterKey));
-        Log.Information("Generated and saved protected key: {KeyFile}, KeyHash={KeyHash}", keyFilePath, keyHash);
-
-        // メモリからキーをクリア
-        Array.Clear(masterKey, 0, masterKey.Length);
-    }
-
-    /// <summary>
-    /// データを暗号化
+    /// データを暗号化（認証タグ付き）
     /// </summary>
     /// <param name="plaintext">平文データ</param>
-    /// <param name="associatedData">関連データ（認証対象だが暗号化しない）</param>
-    /// <returns>暗号化されたデータ（Nonce + Ciphertext + Tag）</returns>
+    /// <param name="associatedData">認証対象の関連データ（オプション）</param>
+    /// <returns>暗号化データ（Nonce + Ciphertext + Tag）</returns>
     public byte[] Encrypt(byte[] plaintext, byte[]? associatedData = null)
     {
         if (plaintext == null || plaintext.Length == 0)
-        {
             throw new ArgumentException("Plaintext cannot be null or empty", nameof(plaintext));
-        }
-
-        // Nonceを生成（リプレイ攻撃対策）
-        var nonce = GenerateNonce();
-
-        // 出力バッファ: [Nonce(12) | Ciphertext(N) | Tag(16)]
-        var ciphertext = new byte[plaintext.Length];
-        var tag = new byte[TAG_SIZE_BYTES];
 
         try
         {
-            _aesGcm.Encrypt(
-                nonce,
-                plaintext,
-                ciphertext,
-                tag,
-                associatedData
-            );
+            // 一意なNonceを生成（カウンター方式）
+            var nonce = GenerateNonce();
+            
+            // 暗号化バッファ確保
+            var ciphertext = new byte[plaintext.Length];
+            var tag = new byte[TAG_SIZE_BYTES];
 
-            // Nonce + Ciphertext + Tagを結合
+            // AES-GCM暗号化
+            using var aesGcm = new AesGcm(_masterKey, TAG_SIZE_BYTES);
+            aesGcm.Encrypt(nonce, plaintext, ciphertext, tag, associatedData);
+
+            // Nonce + Ciphertext + Tag を結合
             var result = new byte[NONCE_SIZE_BYTES + ciphertext.Length + TAG_SIZE_BYTES];
             Buffer.BlockCopy(nonce, 0, result, 0, NONCE_SIZE_BYTES);
             Buffer.BlockCopy(ciphertext, 0, result, NONCE_SIZE_BYTES, ciphertext.Length);
             Buffer.BlockCopy(tag, 0, result, NONCE_SIZE_BYTES + ciphertext.Length, TAG_SIZE_BYTES);
 
-            Log.Debug("Encrypted {PlaintextSize} bytes -> {CiphertextSize} bytes (Nonce: {Nonce})",
-                plaintext.Length,
-                result.Length,
-                BitConverter.ToUInt64(nonce, 0));
+            Log.Debug("Encrypted {PlaintextSize} bytes -> {CiphertextSize} bytes", 
+                plaintext.Length, result.Length);
 
             return result;
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Encryption failed");
-            throw;
+            throw new CryptographicException("Encryption operation failed", ex);
         }
     }
 
     /// <summary>
-    /// データを復号化
+    /// データを復号化（認証タグ検証付き）
     /// </summary>
-    /// <param name="encryptedData">暗号化されたデータ（Nonce + Ciphertext + Tag）</param>
-    /// <param name="associatedData">関連データ（暗号化時と同じもの）</param>
-    /// <returns>復号化された平文データ</returns>
+    /// <param name="encryptedData">暗号化データ（Nonce + Ciphertext + Tag）</param>
+    /// <param name="associatedData">認証対象の関連データ（オプション）</param>
+    /// <returns>復号化された平文</returns>
+    /// <exception cref="CryptographicException">認証タグ検証失敗時</exception>
     public byte[] Decrypt(byte[] encryptedData, byte[]? associatedData = null)
     {
         if (encryptedData == null || encryptedData.Length < NONCE_SIZE_BYTES + TAG_SIZE_BYTES)
-        {
-            throw new ArgumentException("Invalid encrypted data", nameof(encryptedData));
-        }
+            throw new ArgumentException("Encrypted data is too short", nameof(encryptedData));
 
         try
         {
@@ -183,136 +127,188 @@ public class CryptoEngine : IDisposable
             Buffer.BlockCopy(encryptedData, NONCE_SIZE_BYTES, ciphertext, 0, ciphertextLength);
             Buffer.BlockCopy(encryptedData, NONCE_SIZE_BYTES + ciphertextLength, tag, 0, TAG_SIZE_BYTES);
 
-            // Nonce検証（リプレイ攻撃対策）
-            if (!ValidateNonce(nonce))
-            {
-                Log.Warning("Replay attack detected: Invalid nonce {Nonce}", BitConverter.ToUInt64(nonce, 0));
-                throw new CryptographicException("Replay attack detected: Invalid or reused nonce");
-            }
-
+            // 復号化バッファ確保
             var plaintext = new byte[ciphertextLength];
 
-            _aesGcm.Decrypt(
-                nonce,
-                ciphertext,
-                tag,
-                plaintext,
-                associatedData
-            );
+            // AES-GCM復号化（認証タグ検証を含む）
+            using var aesGcm = new AesGcm(_masterKey, TAG_SIZE_BYTES);
+            aesGcm.Decrypt(nonce, ciphertext, tag, plaintext, associatedData);
 
-            Log.Debug("Decrypted {CiphertextSize} bytes -> {PlaintextSize} bytes (Nonce: {Nonce})",
-                encryptedData.Length,
-                plaintext.Length,
-                BitConverter.ToUInt64(nonce, 0));
+            Log.Debug("Decrypted {CiphertextSize} bytes -> {PlaintextSize} bytes", 
+                encryptedData.Length, plaintext.Length);
 
             return plaintext;
         }
         catch (CryptographicException ex)
         {
-            Log.Error(ex, "Decryption failed: Authentication tag mismatch or corrupted data");
-            throw;
+            Log.Error(ex, "Decryption failed - possible tampering detected");
+            throw new CryptographicException("Decryption or authentication failed", ex);
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Decryption failed");
-            throw;
+            Log.Error(ex, "Unexpected error during decryption");
+            throw new CryptographicException("Decryption operation failed", ex);
         }
     }
 
     /// <summary>
-    /// 暗号学的に安全なNonceを生成
+    /// PBKDF2でパスワードから鍵を導出
+    /// </summary>
+    private byte[] DeriveKey(string password, byte[] salt)
+    {
+        using var pbkdf2 = new Rfc2898DeriveBytes(
+            password, 
+            salt, 
+            PBKDF2_ITERATIONS, 
+            HashAlgorithmName.SHA256);
+        
+        var key = pbkdf2.GetBytes(KEY_SIZE_BYTES);
+        
+        Log.Debug("Derived {KeySize}-byte key using PBKDF2 with {Iterations} iterations", 
+            KEY_SIZE_BYTES, PBKDF2_ITERATIONS);
+        
+        return key;
+    }
+
+    /// <summary>
+    /// 暗号学的に安全なソルトを生成
+    /// </summary>
+    public byte[] GenerateSalt()
+    {
+        var salt = new byte[SALT_SIZE_BYTES];
+        _rng.GetBytes(salt);
+        return salt;
+    }
+
+    /// <summary>
+    /// 一意なNonceを生成（カウンターベース）
     /// </summary>
     private byte[] GenerateNonce()
     {
         lock (_nonceLock)
         {
-            _nonceCounter++;
-
-            // Nonce構造: [Counter(8 bytes) | Random(4 bytes)]
+            // カウンターをインクリメント
+            var counter = Interlocked.Increment(ref _nonceCounter);
+            
+            // 12バイトNonce: 8バイト（カウンター） + 4バイト（ランダム）
             var nonce = new byte[NONCE_SIZE_BYTES];
-            BitConverter.GetBytes(_nonceCounter).CopyTo(nonce, 0);
-
-            // 追加のランダム性を付与（衝突回避）
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                var randomPart = new byte[4];
-                rng.GetBytes(randomPart);
-                randomPart.CopyTo(nonce, 8);
-            }
-
+            BitConverter.GetBytes(counter).CopyTo(nonce, 0);
+            
+            // 追加のランダム性（オーバーフロー対策）
+            var randomPart = new byte[4];
+            _rng.GetBytes(randomPart);
+            randomPart.CopyTo(nonce, 8);
+            
             return nonce;
         }
     }
 
     /// <summary>
-    /// Nonceの妥当性を検証（リプレイ攻撃対策）
+    /// マスターキーをエクスポート（鍵ローテーション用）
     /// </summary>
-    /// <param name="nonce">検証対象のNonce</param>
-    /// <returns>有効な場合はtrue</returns>
-    private bool ValidateNonce(byte[] nonce)
+    /// <returns>32バイトのマスターキー</returns>
+    public byte[] ExportMasterKey()
     {
-        if (nonce.Length != NONCE_SIZE_BYTES)
-        {
-            return false;
-        }
+        var keyCopy = new byte[KEY_SIZE_BYTES];
+        Array.Copy(_masterKey, keyCopy, KEY_SIZE_BYTES);
+        
+        Log.Warning("Master key exported - handle with extreme care");
+        
+        return keyCopy;
+    }
 
-        var receivedCounter = BitConverter.ToUInt64(nonce, 0);
-
-        lock (_nonceLock)
+    /// <summary>
+    /// セキュアに鍵をファイルに保存
+    /// </summary>
+    /// <param name="filePath">保存先ファイルパス</param>
+    /// <param name="password">保護パスワード</param>
+    public void SaveKeyToFile(string filePath, string password)
+    {
+        try
         {
-            // 受信したカウンターが現在のカウンター以下の場合はリプレイ攻撃の可能性
-            // （簡易実装: 実運用ではスライディングウィンドウ方式を推奨）
-            if (receivedCounter <= _nonceCounter)
+            // 鍵を追加のパスワードで暗号化して保存
+            var salt = GenerateSalt();
+            var protectionKey = DeriveKey(password, salt);
+            
+            using var aesGcm = new AesGcm(protectionKey, TAG_SIZE_BYTES);
+            var nonce = GenerateNonce();
+            var ciphertext = new byte[_masterKey.Length];
+            var tag = new byte[TAG_SIZE_BYTES];
+            
+            aesGcm.Encrypt(nonce, _masterKey, ciphertext, tag);
+            
+            // Salt + Nonce + Ciphertext + Tag
+            using var fs = File.Create(filePath);
+            fs.Write(salt, 0, salt.Length);
+            fs.Write(nonce, 0, nonce.Length);
+            fs.Write(ciphertext, 0, ciphertext.Length);
+            fs.Write(tag, 0, tag.Length);
+            
+            // Windows DPAPI追加保護（オプション）
+            if (OperatingSystem.IsWindows())
             {
-                return false;
+                var fileInfo = new FileInfo(filePath);
+                fileInfo.Encrypt(); // NTFS暗号化
             }
-
-            // カウンターを更新
-            _nonceCounter = Math.Max(_nonceCounter, receivedCounter);
-            return true;
+            
+            Log.Information("Master key saved to {FilePath} (encrypted)", filePath);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save master key to file");
+            throw;
         }
     }
 
     /// <summary>
-    /// キーローテーション: 新しいキーで再初期化
+    /// ファイルから鍵を読み込み
     /// </summary>
-    /// <param name="newMasterKey">新しい32バイトのマスターキー</param>
-    public void RotateKey(byte[] newMasterKey)
+    public static CryptoEngine LoadKeyFromFile(string filePath, string password)
     {
-        if (newMasterKey == null || newMasterKey.Length != KEY_SIZE_BYTES)
+        try
         {
-            throw new ArgumentException($"New master key must be exactly {KEY_SIZE_BYTES} bytes", nameof(newMasterKey));
+            using var fs = File.OpenRead(filePath);
+            
+            // Salt + Nonce + Ciphertext + Tag を読み込み
+            var salt = new byte[SALT_SIZE_BYTES];
+            var nonce = new byte[NONCE_SIZE_BYTES];
+            var ciphertext = new byte[KEY_SIZE_BYTES];
+            var tag = new byte[TAG_SIZE_BYTES];
+            
+            fs.Read(salt, 0, salt.Length);
+            fs.Read(nonce, 0, nonce.Length);
+            fs.Read(ciphertext, 0, ciphertext.Length);
+            fs.Read(tag, 0, tag.Length);
+            
+            // パスワードで復号化
+            using var pbkdf2 = new Rfc2898DeriveBytes(password, salt, PBKDF2_ITERATIONS, HashAlgorithmName.SHA256);
+            var protectionKey = pbkdf2.GetBytes(KEY_SIZE_BYTES);
+            
+            using var aesGcm = new AesGcm(protectionKey, TAG_SIZE_BYTES);
+            var masterKey = new byte[KEY_SIZE_BYTES];
+            aesGcm.Decrypt(nonce, ciphertext, tag, masterKey);
+            
+            Log.Information("Master key loaded from {FilePath}", filePath);
+            
+            return new CryptoEngine(masterKey);
         }
-
-        lock (_nonceLock)
+        catch (Exception ex)
         {
-            // 古いキーをクリア
-            Array.Clear(_masterKey, 0, _masterKey.Length);
-
-            // 新しいキーをコピー
-            Array.Copy(newMasterKey, _masterKey, KEY_SIZE_BYTES);
-
-            // AesGcmインスタンスを再生成
-            _aesGcm.Dispose();
-            var newAesGcm = new AesGcm(_masterKey, TAG_SIZE_BYTES);
-
-            // Nonceカウンターをリセット
-            _nonceCounter = 0;
-
-            Log.Warning("Key rotation completed. All previous encrypted data is now inaccessible.");
+            Log.Error(ex, "Failed to load master key from file");
+            throw new CryptographicException("Key file loading failed", ex);
         }
     }
 
     public void Dispose()
     {
-        _aesGcm?.Dispose();
-
-        // メモリからキーをクリア（セキュリティ対策）
+        // マスターキーをメモリから安全に消去
         if (_masterKey != null)
         {
             Array.Clear(_masterKey, 0, _masterKey.Length);
         }
-
-        Log.Information("CryptoEngine disposed and keys cleared from memory");
+        
+        _rng?.Dispose();
+        
+        Log.Information("CryptoEngine disposed - master key cleared from memory");
     }
 }
