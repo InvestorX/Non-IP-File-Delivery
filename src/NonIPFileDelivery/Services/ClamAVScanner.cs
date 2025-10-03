@@ -1,13 +1,16 @@
 using System;
+using System.IO;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
+using NonIPFileDelivery.Models;
+using NonIPFileDelivery.Services;
 
 namespace NonIPFileDelivery.Services
 {
     /// <summary>
-    /// ClamAVスキャナー実装（clamdソケット通信）
+    /// ClamAVマルウェアスキャナー
+    /// clamdソケット通信（INSTREAMプロトコル）を使用
     /// </summary>
     public class ClamAVScanner
     {
@@ -15,53 +18,175 @@ namespace NonIPFileDelivery.Services
         private readonly string _clamdHost;
         private readonly int _clamdPort;
 
+        /// <summary>
+        /// コンストラクタ
+        /// </summary>
+        /// <param name="logger">ロギングサービス</param>
+        /// <param name="clamdHost">clamdホスト（デフォルト: localhost）</param>
+        /// <param name="clamdPort">clamdポート（デフォルト: 3310）</param>
         public ClamAVScanner(ILoggingService logger, string clamdHost = "localhost", int clamdPort = 3310)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _clamdHost = clamdHost;
             _clamdPort = clamdPort;
+
+            _logger.Info($"ClamAVScanner initialized: {_clamdHost}:{_clamdPort}");
         }
 
         /// <summary>
-        /// clamdへの接続テスト（PING/PONG）
+        /// clamdへの接続テスト
         /// </summary>
         public async Task<bool> TestConnectionAsync()
         {
             try
             {
-                _logger.Debug($"Testing ClamAV connection to {_clamdHost}:{_clamdPort}");
-
                 using var client = new TcpClient();
                 await client.ConnectAsync(_clamdHost, _clamdPort);
+
                 using var stream = client.GetStream();
+                using var writer = new StreamWriter(stream, Encoding.ASCII) { AutoFlush = true };
+                using var reader = new StreamReader(stream, Encoding.ASCII);
 
-                // PINGコマンド送信
-                var pingCommand = Encoding.ASCII.GetBytes("zPING\0");
-                await stream.WriteAsync(pingCommand, 0, pingCommand.Length);
+                await writer.WriteLineAsync("PING");
+                var response = await reader.ReadLineAsync();
 
-                // レスポンス受信
-                var buffer = new byte[1024];
-                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                var response = Encoding.ASCII.GetString(buffer, 0, bytesRead).Trim();
-
-                if (response == "PONG")
-                {
-                    _logger.Info($"ClamAV connection successful: {_clamdHost}:{_clamdPort}");
-                    return true;
-                }
-
-                _logger.Warning($"ClamAV unexpected response: {response}");
-                return false;
+                var isConnected = response?.Trim() == "PONG";
+                _logger.Info($"ClamAV connection test: {(isConnected ? "OK" : "FAIL")}");
+                return isConnected;
             }
             catch (Exception ex)
             {
-                _logger.Warning($"ClamAV connection failed: {ex.Message}");
+                _logger.Error($"ClamAV connection test failed: {ex.Message}", ex);
                 return false;
             }
         }
 
         /// <summary>
-        /// ClamAVバージョン取得
+        /// データをClamAVでスキャン
+        /// </summary>
+        /// <param name="data">スキャン対象データ</param>
+        /// <param name="timeoutMs">タイムアウト（ミリ秒）</param>
+        /// <returns>スキャン結果</returns>
+        public async Task<ClamAVScanResult> ScanAsync(byte[] data, int timeoutMs = 5000)
+        {
+            if (data == null || data.Length == 0)
+            {
+                _logger.Warning("Attempted to scan empty data");
+                return new ClamAVScanResult { IsClean = true };
+            }
+
+            try
+            {
+                _logger.Debug($"Scanning {data.Length} bytes with ClamAV...");
+
+                using var client = new TcpClient();
+                var connectTask = client.ConnectAsync(_clamdHost, _clamdPort);
+                var completedTask = await Task.WhenAny(connectTask, Task.Delay(timeoutMs));
+
+                if (completedTask != connectTask)
+                {
+                    _logger.Warning($"ClamAV connection timeout ({timeoutMs}ms)");
+                    return new ClamAVScanResult
+                    {
+                        IsClean = false,
+                        ErrorMessage = "Connection timeout"
+                    };
+                }
+
+                using var stream = client.GetStream();
+                stream.ReadTimeout = timeoutMs;
+                stream.WriteTimeout = timeoutMs;
+
+                // INSTREAMプロトコル: データをチャンク単位で送信
+                var command = Encoding.ASCII.GetBytes("zINSTREAM\0");
+                await stream.WriteAsync(command, 0, command.Length);
+
+                // データサイズを送信（4バイト、ネットワークバイトオーダー）
+                var sizeBytes = BitConverter.GetBytes(data.Length);
+                if (BitConverter.IsLittleEndian)
+                {
+                    Array.Reverse(sizeBytes);
+                }
+                await stream.WriteAsync(sizeBytes, 0, sizeBytes.Length);
+
+                // データ本体を送信
+                await stream.WriteAsync(data, 0, data.Length);
+
+                // 終了マーカー（サイズ0）を送信
+                var endMarker = new byte[4] { 0, 0, 0, 0 };
+                await stream.WriteAsync(endMarker, 0, endMarker.Length);
+
+                // 応答を受信
+                using var reader = new StreamReader(stream, Encoding.ASCII);
+                var response = await reader.ReadLineAsync();
+
+                if (string.IsNullOrEmpty(response))
+                {
+                    _logger.Warning("ClamAV returned empty response");
+                    return new ClamAVScanResult
+                    {
+                        IsClean = false,
+                        ErrorMessage = "Empty response from ClamAV"
+                    };
+                }
+
+                _logger.Debug($"ClamAV response: {response}");
+
+                // 応答解析: "stream: OK" or "stream: Win.Test.EICAR_HDB-1 FOUND"
+                if (response.Contains("OK"))
+                {
+                    _logger.Debug("ClamAV scan completed: No threats detected");
+                    return new ClamAVScanResult { IsClean = true };
+                }
+                else if (response.Contains("FOUND"))
+                {
+                    var virusName = ExtractVirusName(response);
+                    _logger.Warning($"ClamAV detected virus: {virusName}");
+                    return new ClamAVScanResult
+                    {
+                        IsClean = false,
+                        VirusName = virusName,
+                        Details = response
+                    };
+                }
+                else
+                {
+                    _logger.Warning($"Unexpected ClamAV response: {response}");
+                    return new ClamAVScanResult
+                    {
+                        IsClean = false,
+                        ErrorMessage = $"Unexpected response: {response}"
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"ClamAV scan error: {ex.Message}", ex);
+                return new ClamAVScanResult
+                {
+                    IsClean = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
+        /// <summary>
+        /// ClamAV応答からウイルス名を抽出
+        /// </summary>
+        private string ExtractVirusName(string response)
+        {
+            // 例: "stream: Win.Test.EICAR_HDB-1 FOUND"
+            var parts = response.Split(':');
+            if (parts.Length >= 2)
+            {
+                var virusPart = parts[1].Trim();
+                return virusPart.Replace(" FOUND", "").Trim();
+            }
+            return "Unknown";
+        }
+
+        /// <summary>
+        /// ClamAVバージョンを取得
         /// </summary>
         public async Task<string?> GetVersionAsync()
         {
@@ -69,16 +194,13 @@ namespace NonIPFileDelivery.Services
             {
                 using var client = new TcpClient();
                 await client.ConnectAsync(_clamdHost, _clamdPort);
+
                 using var stream = client.GetStream();
+                using var writer = new StreamWriter(stream, Encoding.ASCII) { AutoFlush = true };
+                using var reader = new StreamReader(stream, Encoding.ASCII);
 
-                // VERSIONコマンド送信
-                var versionCommand = Encoding.ASCII.GetBytes("zVERSION\0");
-                await stream.WriteAsync(versionCommand, 0, versionCommand.Length);
-
-                // レスポンス受信
-                var buffer = new byte[1024];
-                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                var version = Encoding.ASCII.GetString(buffer, 0, bytesRead).Trim();
+                await writer.WriteLineAsync("VERSION");
+                var version = await reader.ReadLineAsync();
 
                 _logger.Info($"ClamAV version: {version}");
                 return version;
@@ -89,109 +211,5 @@ namespace NonIPFileDelivery.Services
                 return null;
             }
         }
-
-        /// <summary>
-        /// データをClamAVでスキャン（INSTREAMプロトコル）
-        /// </summary>
-        public async Task<ClamAVScanResult> ScanAsync(byte[] data, int timeoutMs)
-        {
-            if (data == null || data.Length == 0)
-                throw new ArgumentException("Data cannot be null or empty", nameof(data));
-
-            try
-            {
-                _logger.Debug($"Starting ClamAV scan ({data.Length} bytes, timeout: {timeoutMs}ms)");
-
-                using var cts = new CancellationTokenSource(timeoutMs);
-                using var client = new TcpClient();
-                await client.ConnectAsync(_clamdHost, _clamdPort);
-                using var stream = client.GetStream();
-
-                // INSTREAMコマンド送信
-                var instreamCommand = Encoding.ASCII.GetBytes("zINSTREAM\0");
-                await stream.WriteAsync(instreamCommand, 0, instreamCommand.Length, cts.Token);
-
-                // データサイズ送信（ビッグエンディアン）
-                var sizeBytes = BitConverter.GetBytes(data.Length);
-                if (BitConverter.IsLittleEndian)
-                    Array.Reverse(sizeBytes);
-                await stream.WriteAsync(sizeBytes, 0, sizeBytes.Length, cts.Token);
-
-                // データ本体送信
-                await stream.WriteAsync(data, 0, data.Length, cts.Token);
-
-                // 終了マーカー送信（サイズ=0）
-                await stream.WriteAsync(new byte[4], 0, 4, cts.Token);
-
-                // レスポンス受信
-                var buffer = new byte[2048];
-                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cts.Token);
-                var response = Encoding.ASCII.GetString(buffer, 0, bytesRead).Trim();
-
-                _logger.Debug($"ClamAV response: {response}");
-
-                // レスポンス解析
-                if (response.Contains("OK"))
-                {
-                    _logger.Info("ClamAV scan: Clean");
-                    return new ClamAVScanResult
-                    {
-                        IsClean = true,
-                        VirusName = null,
-                        ErrorMessage = null
-                    };
-                }
-                else if (response.Contains("FOUND"))
-                {
-                    var parts = response.Split(':');
-                    var virusName = parts.Length > 1 ? parts[1].Replace("FOUND", "").Trim() : "Unknown";
-                    _logger.Warning($"ClamAV detected: {virusName}");
-                    return new ClamAVScanResult
-                    {
-                        IsClean = false,
-                        VirusName = virusName,
-                        ErrorMessage = null
-                    };
-                }
-
-                _logger.Warning($"ClamAV unexpected response: {response}");
-                return new ClamAVScanResult
-                {
-                    IsClean = false,
-                    VirusName = null,
-                    ErrorMessage = response
-                };
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.Warning($"ClamAV scan timed out ({timeoutMs}ms)");
-                return new ClamAVScanResult
-                {
-                    IsClean = false,
-                    VirusName = null,
-                    ErrorMessage = $"Scan timeout ({timeoutMs}ms)"
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"ClamAV scan error: {ex.Message}", ex);
-                return new ClamAVScanResult
-                {
-                    IsClean = false,
-                    VirusName = null,
-                    ErrorMessage = ex.Message
-                };
-            }
-        }
-    }
-
-    /// <summary>
-    /// ClamAVスキャン結果
-    /// </summary>
-    public class ClamAVScanResult
-    {
-        public bool IsClean { get; set; }
-        public string? VirusName { get; set; }
-        public string? ErrorMessage { get; set; }
     }
 }
