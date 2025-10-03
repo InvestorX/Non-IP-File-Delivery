@@ -1,4 +1,5 @@
 using NonIPFileDelivery.Exceptions;
+using NonIPFileDelivery.Services;
 
 namespace NonIPFileDelivery.Resilience;
 

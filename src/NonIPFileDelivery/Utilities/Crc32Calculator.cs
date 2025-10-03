@@ -80,20 +80,33 @@ public static class Crc32Calculator
     /// <summary>
     /// 複数のデータ片を連結してCRC32を計算
     /// </summary>
-    public static uint CalculateComposite(params ReadOnlySpan<byte>[] dataParts)
+    public static uint CalculateComposite(IEnumerable<byte[]> dataParts)
     {
         ArgumentNullException.ThrowIfNull(dataParts);
-        if (dataParts.Length == 0) return 0;
-
+        
         var crc32 = new Crc32();
+        var hasData = false;
+        
         foreach (var part in dataParts)
         {
-            if (!part.IsEmpty)
+            if (part != null && part.Length > 0)
             {
                 crc32.Append(part);
+                hasData = true;
             }
         }
+        
+        if (!hasData) return 0;
+        
         var hash = crc32.GetCurrentHash();
         return BinaryPrimitives.ReadUInt32BigEndian(hash);
+    }
+
+    /// <summary>
+    /// 複数のデータ片を連結してCRC32を計算（params 配列版）
+    /// </summary>
+    public static uint CalculateComposite(params byte[][] dataParts)
+    {
+        return CalculateComposite((IEnumerable<byte[]>)dataParts);
     }
 }

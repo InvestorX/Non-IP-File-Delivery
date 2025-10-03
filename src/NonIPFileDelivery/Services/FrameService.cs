@@ -1,6 +1,6 @@
-// FrameService.cs（既存ファイルに追加・修正）
-
-using NonIPFileDelivery.Services;
+using System;
+using NonIPFileDelivery.Models;
+using NonIPFileDelivery.Utilities;
 
 namespace NonIPFileDelivery.Services
 {
@@ -109,6 +109,175 @@ namespace NonIPFileDelivery.Services
             }
         }
 
-        // ... 既存メソッド（CreateHeartbeatFrame, CreateDataFrame等）は変更なし
+        /// <summary>
+        /// ハートビートフレームを作成
+        /// </summary>
+        public NonIPFrame CreateHeartbeatFrame(byte[] sourceMac)
+        {
+            if (sourceMac == null || sourceMac.Length != 6)
+                throw new ArgumentException("Source MAC address must be 6 bytes", nameof(sourceMac));
+
+            return new NonIPFrame
+            {
+                Header = new FrameHeader
+                {
+                    SourceMAC = sourceMac,
+                    DestinationMAC = new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }, // Broadcast
+                    Type = FrameType.Heartbeat,
+                    SequenceNumber = (ushort)System.Threading.Interlocked.Increment(ref _sequenceNumber),
+                    PayloadLength = 0,
+                    Flags = FrameFlags.None,
+                    Timestamp = DateTime.UtcNow
+                },
+                Payload = Array.Empty<byte>()
+            };
+        }
+
+        /// <summary>
+        /// データフレームを作成
+        /// </summary>
+        public NonIPFrame CreateDataFrame(byte[] sourceMac, byte[] destinationMac, byte[] data, FrameFlags flags = FrameFlags.None)
+        {
+            if (sourceMac == null || sourceMac.Length != 6)
+                throw new ArgumentException("Source MAC address must be 6 bytes", nameof(sourceMac));
+            if (destinationMac == null || destinationMac.Length != 6)
+                throw new ArgumentException("Destination MAC address must be 6 bytes", nameof(destinationMac));
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            return new NonIPFrame
+            {
+                Header = new FrameHeader
+                {
+                    SourceMAC = sourceMac,
+                    DestinationMAC = destinationMac,
+                    Type = FrameType.Data,
+                    SequenceNumber = (ushort)System.Threading.Interlocked.Increment(ref _sequenceNumber),
+                    PayloadLength = (ushort)data.Length,
+                    Flags = flags,
+                    Timestamp = DateTime.UtcNow
+                },
+                Payload = data
+            };
+        }
+
+        /// <summary>
+        /// ファイル転送フレームを作成
+        /// </summary>
+        public NonIPFrame CreateFileTransferFrame(byte[] sourceMac, byte[] destinationMac, FileTransferFrame fileData)
+        {
+            if (sourceMac == null || sourceMac.Length != 6)
+                throw new ArgumentException("Source MAC address must be 6 bytes", nameof(sourceMac));
+            if (destinationMac == null || destinationMac.Length != 6)
+                throw new ArgumentException("Destination MAC address must be 6 bytes", nameof(destinationMac));
+            if (fileData == null)
+                throw new ArgumentNullException(nameof(fileData));
+
+            // FileTransferFrame をバイト配列にシリアライズ（簡易実装）
+            using var ms = new System.IO.MemoryStream();
+            using var writer = new System.IO.BinaryWriter(ms);
+            
+            writer.Write((byte)fileData.Operation);
+            writer.Write(fileData.FileName ?? string.Empty);
+            writer.Write(fileData.FileSize);
+            writer.Write(fileData.ChunkIndex);
+            writer.Write(fileData.TotalChunks);
+            writer.Write(fileData.ChunkData?.Length ?? 0);
+            if (fileData.ChunkData != null && fileData.ChunkData.Length > 0)
+            {
+                writer.Write(fileData.ChunkData);
+            }
+            writer.Write(fileData.FileHash ?? string.Empty);
+            writer.Write(fileData.SessionId.ToByteArray());
+            
+            var payload = ms.ToArray();
+
+            return new NonIPFrame
+            {
+                Header = new FrameHeader
+                {
+                    SourceMAC = sourceMac,
+                    DestinationMAC = destinationMac,
+                    Type = FrameType.FileTransfer,
+                    SequenceNumber = (ushort)System.Threading.Interlocked.Increment(ref _sequenceNumber),
+                    PayloadLength = (ushort)payload.Length,
+                    Flags = FrameFlags.None,
+                    SessionId = fileData.SessionId,
+                    Timestamp = DateTime.UtcNow
+                },
+                Payload = payload
+            };
+        }
+
+        /// <summary>
+        /// フレームを検証
+        /// </summary>
+        public bool ValidateFrame(NonIPFrame frame, byte[] rawData)
+        {
+            if (frame == null || rawData == null)
+                return false;
+
+            try
+            {
+                // CRC32チェックサムの検証
+                var dataWithoutChecksum = new byte[rawData.Length - 4];
+                Buffer.BlockCopy(rawData, 0, dataWithoutChecksum, 0, dataWithoutChecksum.Length);
+                
+                var calculatedChecksum = Crc32Calculator.Calculate(dataWithoutChecksum);
+                
+                return calculatedChecksum == frame.Checksum;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Frame validation error: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// チェックサムを計算
+        /// </summary>
+        public uint CalculateChecksum(byte[] data)
+        {
+            return Crc32Calculator.Calculate(data);
+        }
+
+        private byte[] SerializeHeader(FrameHeader header)
+        {
+            using var ms = new System.IO.MemoryStream();
+            using var writer = new System.IO.BinaryWriter(ms);
+            
+            // Ethernet Header
+            writer.Write(header.DestinationMAC);
+            writer.Write(header.SourceMAC);
+            writer.Write(header.EtherType);
+            
+            // Custom Header
+            writer.Write((byte)header.Type);
+            writer.Write(header.SequenceNumber);
+            writer.Write(header.PayloadLength);
+            writer.Write((byte)header.Flags);
+            
+            return ms.ToArray();
+        }
+
+        private FrameHeader DeserializeHeader(byte[] data)
+        {
+            using var ms = new System.IO.MemoryStream(data);
+            using var reader = new System.IO.BinaryReader(ms);
+            
+            var header = new FrameHeader
+            {
+                DestinationMAC = reader.ReadBytes(6),
+                SourceMAC = reader.ReadBytes(6),
+                EtherType = reader.ReadUInt16(),
+                Type = (FrameType)reader.ReadByte(),
+                SequenceNumber = reader.ReadUInt16(),
+                PayloadLength = reader.ReadUInt16(),
+                Flags = (FrameFlags)reader.ReadByte()
+            };
+            
+            return header;
+        }
     }
 }
