@@ -1,13 +1,15 @@
 using System;
 using System.IO;
-using System.Threading;
 using System.Threading.Tasks;
-using dnYara;
+using libyaraNET;
+using NonIPFileDelivery.Models;
+using NonIPFileDelivery.Services;
 
 namespace NonIPFileDelivery.Services
 {
     /// <summary>
-    /// YARAスキャナー実装（libyara.NET使用）
+    /// YARAルールベースのマルウェアスキャナー
+    /// libyara.NET v4.5.0を使用
     /// </summary>
     public class YARAScanner : IDisposable
     {
@@ -16,19 +18,26 @@ namespace NonIPFileDelivery.Services
         private Rules? _compiledRules;
         private bool _disposed;
 
+        /// <summary>
+        /// コンストラクタ
+        /// </summary>
+        /// <param name="logger">ロギングサービス</param>
+        /// <param name="rulesPath">YARAルールファイルのパス（.yarファイル）</param>
         public YARAScanner(ILoggingService logger, string rulesPath)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _rulesPath = rulesPath ?? throw new ArgumentNullException(nameof(rulesPath));
 
             if (!File.Exists(_rulesPath))
+            {
                 throw new FileNotFoundException($"YARA rules file not found: {_rulesPath}");
+            }
 
             LoadRules();
         }
 
         /// <summary>
-        /// YARAルールファイルを読み込み・コンパイル
+        /// YARAルールファイルを読み込み、コンパイル
         /// </summary>
         private void LoadRules()
         {
@@ -41,48 +50,72 @@ namespace NonIPFileDelivery.Services
 
                 // ルールファイルをコンパイル
                 compiler.AddRuleFile(_rulesPath);
-                _compiledRules = compiler.GetRules();
+                _compiledRules = compiler.Compile();
 
-                _logger.Info($"YARA rules compiled successfully: {_rulesPath}");
+                var ruleCount = _compiledRules?.Rules?.Count ?? 0;
+                _logger.Info($"YARA rules loaded successfully: {ruleCount} rules");
             }
             catch (Exception ex)
             {
                 _logger.Error($"Failed to load YARA rules: {ex.Message}", ex);
-                throw;
+                throw new InvalidOperationException("YARA rules compilation failed", ex);
             }
         }
 
         /// <summary>
-        /// データをYARAルールでスキャン（非同期・タイムアウト付き）
+        /// データをYARAルールでスキャン
         /// </summary>
-        public async Task<YARAScanResult> ScanAsync(byte[] data, int timeoutMs)
+        /// <param name="data">スキャン対象データ</param>
+        /// <param name="timeoutMs">タイムアウト（ミリ秒）</param>
+        /// <returns>スキャン結果</returns>
+        public async Task<YARAScanResult> ScanAsync(byte[] data, int timeoutMs = 5000)
         {
-            if (data == null || data.Length == 0)
-                throw new ArgumentException("Data cannot be null or empty", nameof(data));
-
             if (_compiledRules == null)
-                throw new InvalidOperationException("YARA rules not loaded");
+            {
+                _logger.Error("YARA rules not loaded");
+                return new YARAScanResult
+                {
+                    IsMatch = false,
+                    ErrorMessage = "YARA rules not loaded"
+                };
+            }
+
+            if (data == null || data.Length == 0)
+            {
+                _logger.Warning("Attempted to scan empty data");
+                return new YARAScanResult { IsMatch = false };
+            }
 
             try
             {
-                _logger.Debug($"Starting YARA scan ({data.Length} bytes, timeout: {timeoutMs}ms)");
+                _logger.Debug($"Scanning {data.Length} bytes with YARA rules...");
 
-                using var cts = new CancellationTokenSource(timeoutMs);
-                
-                // 非同期スキャン実行
+                // タイムアウト付きスキャン実行
                 var scanTask = Task.Run(() =>
                 {
                     using var scanner = new Scanner();
-                    return scanner.ScanMemory(data, _compiledRules);
-                }, cts.Token);
+                    var results = scanner.ScanMemory(data, _compiledRules);
+                    return results;
+                });
 
-                var matches = await scanTask;
+                var completedTask = await Task.WhenAny(scanTask, Task.Delay(timeoutMs));
 
-                if (matches.Count > 0)
+                if (completedTask != scanTask)
                 {
-                    var firstMatch = matches[0];
-                    _logger.Warning($"YARA rule matched: {firstMatch.Rule.Identifier} " +
-                                   $"({firstMatch.Matches.Count} string matches)");
+                    _logger.Warning($"YARA scan timeout ({timeoutMs}ms)");
+                    return new YARAScanResult
+                    {
+                        IsMatch = false,
+                        ErrorMessage = "Scan timeout"
+                    };
+                }
+
+                var scanResults = await scanTask;
+
+                if (scanResults != null && scanResults.Count > 0)
+                {
+                    var firstMatch = scanResults[0];
+                    _logger.Warning($"YARA rule matched: {firstMatch.Rule.Identifier}");
 
                     return new YARAScanResult
                     {
@@ -93,35 +126,22 @@ namespace NonIPFileDelivery.Services
                     };
                 }
 
-                _logger.Debug("YARA scan completed: No matches");
-                return new YARAScanResult
-                {
-                    IsMatch = false,
-                    RuleName = null,
-                    MatchedStrings = 0,
-                    Details = "No YARA rules matched"
-                };
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.Warning($"YARA scan timed out ({timeoutMs}ms)");
-                return new YARAScanResult
-                {
-                    IsMatch = false,
-                    RuleName = null,
-                    MatchedStrings = 0,
-                    Details = $"Scan timeout ({timeoutMs}ms)"
-                };
+                _logger.Debug("YARA scan completed: No threats detected");
+                return new YARAScanResult { IsMatch = false };
             }
             catch (Exception ex)
             {
                 _logger.Error($"YARA scan error: {ex.Message}", ex);
-                throw;
+                return new YARAScanResult
+                {
+                    IsMatch = false,
+                    ErrorMessage = ex.Message
+                };
             }
         }
 
         /// <summary>
-        /// YARAルールを再読み込み
+        /// YARAルールをリロード
         /// </summary>
         public void ReloadRules()
         {
@@ -138,16 +158,5 @@ namespace NonIPFileDelivery.Services
             _disposed = true;
             _logger.Info("YARAScanner disposed");
         }
-    }
-
-    /// <summary>
-    /// YARAスキャン結果
-    /// </summary>
-    public class YARAScanResult
-    {
-        public bool IsMatch { get; set; }
-        public string? RuleName { get; set; }
-        public int MatchedStrings { get; set; }
-        public string? Details { get; set; }
     }
 }
