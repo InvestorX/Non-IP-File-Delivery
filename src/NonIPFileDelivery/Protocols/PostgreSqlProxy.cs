@@ -10,58 +10,61 @@ using System.Text;
 namespace NonIpFileDelivery.Protocols;
 
 /// <summary>
-/// PostgreSQL Wire Protocolのプロキシサーバー
-/// PostgreSQL v3プロトコル完全対応
+/// PostgreSQL Wire Protocolプロキシサーバー
+/// Windows端末A ⇔ 非IP送受信機A ⇔ [Raw Ethernet] ⇔ 非IP送受信機B ⇔ PostgreSQLサーバー
 /// </summary>
 public class PostgreSqlProxy : IDisposable
 {
     private readonly RawEthernetTransceiver _transceiver;
     private readonly SecurityInspector _inspector;
     private readonly TcpListener _listener;
-    private readonly IPEndPoint _targetPostgreSqlServer;
+    private readonly IPEndPoint _targetPgServer;
     private readonly CancellationTokenSource _cts;
     private readonly Dictionary<string, PostgreSqlSession> _sessions;
-    private readonly SemaphoreSlim _sessionLock;
+    private readonly object _sessionLock = new();
     private bool _isRunning;
 
-    // PostgreSQL Wire Protocolメッセージタイプ
+    // プロトコル識別子
+    private const byte PROTOCOL_PGSQL_STARTUP = 0x10;
+    private const byte PROTOCOL_PGSQL_QUERY = 0x11;
+    private const byte PROTOCOL_PGSQL_DATA = 0x12;
+    private const byte PROTOCOL_PGSQL_RESPONSE = 0x13;
+
+    // PostgreSQLメッセージタイプ
     private const byte MSG_QUERY = (byte)'Q';
     private const byte MSG_PARSE = (byte)'P';
     private const byte MSG_BIND = (byte)'B';
     private const byte MSG_EXECUTE = (byte)'E';
-    private const byte MSG_DESCRIBE = (byte)'D';
-    private const byte MSG_CLOSE = (byte)'C';
-    private const byte MSG_SYNC = (byte)'S';
     private const byte MSG_TERMINATE = (byte)'X';
-
-    // プロトコル識別子（非IP送受信機間通信）
-    private const byte PROTOCOL_POSTGRESQL_CONTROL = 0x03;
-    private const byte PROTOCOL_POSTGRESQL_DATA = 0x04;
 
     /// <summary>
     /// PostgreSQLプロキシを初期化
     /// </summary>
+    /// <param name="transceiver">Raw Ethernetトランシーバー</param>
+    /// <param name="inspector">セキュリティインスペクター</param>
+    /// <param name="listenPort">Windows端末Aからの接続待ち受けポート</param>
+    /// <param name="targetPgHost">Windows端末B側のPostgreSQLサーバーホスト</param>
+    /// <param name="targetPgPort">Windows端末B側のPostgreSQLサーバーポート</param>
     public PostgreSqlProxy(
         RawEthernetTransceiver transceiver,
         SecurityInspector inspector,
         int listenPort = 5432,
-        string targetHost = "192.168.1.100",
-        int targetPort = 5432)
+        string targetPgHost = "192.168.1.100",
+        int targetPgPort = 5432)
     {
         _transceiver = transceiver;
         _inspector = inspector;
         _listener = new TcpListener(IPAddress.Any, listenPort);
-        _targetPostgreSqlServer = new IPEndPoint(IPAddress.Parse(targetHost), targetPort);
+        _targetPgServer = new IPEndPoint(IPAddress.Parse(targetPgHost), targetPgPort);
         _cts = new CancellationTokenSource();
         _sessions = new Dictionary<string, PostgreSqlSession>();
-        _sessionLock = new SemaphoreSlim(1, 1);
 
         Log.Information("PostgreSqlProxy initialized: Listen={ListenPort}, Target={TargetHost}:{TargetPort}",
-            listenPort, targetHost, targetPort);
+            listenPort, targetPgHost, targetPgPort);
     }
 
     /// <summary>
-    /// プロキシを起動
+    /// PostgreSQLプロキシを起動
     /// </summary>
     public async Task StartAsync()
     {
@@ -70,7 +73,8 @@ public class PostgreSqlProxy : IDisposable
         _listener.Start();
         _isRunning = true;
 
-        Log.Information("PostgreSqlProxy started on port {Port}", ((IPEndPoint)_listener.LocalEndpoint).Port);
+        Log.Information("PostgreSqlProxy started, listening on port {Port}",
+            ((IPEndPoint)_listener.LocalEndpoint).Port);
 
         // クライアント接続受付ループ
         _ = Task.Run(async () =>
@@ -104,40 +108,26 @@ public class PostgreSqlProxy : IDisposable
     }
 
     /// <summary>
-    /// PostgreSQLクライアント接続を処理
+    /// Windows端末Aからの接続を処理
     /// </summary>
     private async Task HandleClientAsync(TcpClient client)
     {
         var sessionId = Guid.NewGuid().ToString("N")[..8];
-        var session = new PostgreSqlSession
-        {
-            SessionId = sessionId,
-            ClientSocket = client,
-            StartTime = DateTime.UtcNow
-        };
+        Log.Information("PostgreSQL client connected: {SessionId}, RemoteEP={RemoteEndPoint}",
+            sessionId, client.Client.RemoteEndPoint);
 
-        await _sessionLock.WaitAsync();
-        try
+        var session = new PostgreSqlSession(sessionId, client);
+
+        lock (_sessionLock)
         {
             _sessions[sessionId] = session;
         }
-        finally
-        {
-            _sessionLock.Release();
-        }
-
-        Log.Information("PostgreSQL client connected: {SessionId}, RemoteEP={RemoteEndPoint}",
-            sessionId, client.Client.RemoteEndPoint);
 
         try
         {
             using var clientStream = client.GetStream();
             var pipe = PipeReader.Create(clientStream);
 
-            // PostgreSQL Startup Message処理
-            await HandleStartupMessageAsync(pipe, session, clientStream);
-
-            // メインメッセージループ
             while (!_cts.Token.IsCancellationRequested)
             {
                 var result = await pipe.ReadAsync(_cts.Token);
@@ -146,14 +136,10 @@ public class PostgreSqlProxy : IDisposable
                 if (buffer.IsEmpty && result.IsCompleted)
                     break;
 
-                // PostgreSQLメッセージ解析（1バイトタイプ + 4バイト長）
+                // PostgreSQLメッセージ解析
                 while (TryReadPostgreSqlMessage(ref buffer, out var messageType, out var messageData))
                 {
-                    await ProcessPostgreSqlMessageAsync(
-                        messageType, 
-                        messageData, 
-                        session, 
-                        clientStream);
+                    await ProcessPostgreSqlMessageAsync(sessionId, messageType, messageData, clientStream);
                 }
 
                 pipe.AdvanceTo(buffer.Start, buffer.End);
@@ -168,197 +154,82 @@ public class PostgreSqlProxy : IDisposable
         }
         finally
         {
-            await _sessionLock.WaitAsync();
-            try
+            lock (_sessionLock)
             {
                 _sessions.Remove(sessionId);
             }
-            finally
-            {
-                _sessionLock.Release();
-            }
 
             client.Close();
-            Log.Information("PostgreSQL client disconnected: {SessionId}, Duration={Duration}s",
-                sessionId, (DateTime.UtcNow - session.StartTime).TotalSeconds);
+            Log.Information("PostgreSQL client disconnected: {SessionId}", sessionId);
         }
-    }
-
-    /// <summary>
-    /// PostgreSQL Startup Message処理（認証前）
-    /// </summary>
-    private async Task HandleStartupMessageAsync(
-        PipeReader pipe, 
-        PostgreSqlSession session, 
-        NetworkStream clientStream)
-    {
-        var result = await pipe.ReadAsync(_cts.Token);
-        var buffer = result.Buffer;
-
-        if (buffer.Length >= 8)
-        {
-            var length = ReadInt32BigEndian(buffer.Slice(0, 4));
-            var protocolVersion = ReadInt32BigEndian(buffer.Slice(4, 4));
-
-            Log.Debug("PostgreSQL Startup: SessionId={SessionId}, Protocol={Protocol:X8}",
-                session.SessionId, protocolVersion);
-
-            // Startup Messageを非IP送受信機Bに転送
-            var startupData = buffer.Slice(0, length).ToArray();
-            var payload = BuildProtocolPayload(
-                PROTOCOL_POSTGRESQL_CONTROL,
-                session.SessionId,
-                new[] { (byte)0xFF }, // スタートアップマーカー
-                startupData);
-
-            await _transceiver.SendAsync(payload, _cts.Token);
-
-            session.IsAuthenticated = true; // 実際の認証処理は簡略化
-        }
-
-        pipe.AdvanceTo(buffer.Start, buffer.End);
     }
 
     /// <summary>
     /// PostgreSQLメッセージを処理
     /// </summary>
     private async Task ProcessPostgreSqlMessageAsync(
+        string sessionId,
         byte messageType,
         ReadOnlySequence<byte> messageData,
-        PostgreSqlSession session,
         NetworkStream clientStream)
     {
-        // SQLクエリの場合はセキュリティ検閲
-        if (messageType == MSG_QUERY)
+        try
         {
-            var queryText = Encoding.UTF8.GetString(messageData.ToArray()).TrimEnd('\0');
-
-            Log.Debug("PostgreSQL Query: SessionId={SessionId}, Query={Query}",
-                session.SessionId, queryText);
-
-            // SQLインジェクション検査
-            if (IsSuspiciousSqlQuery(queryText))
+            byte protocolType = messageType switch
             {
-                Log.Warning("Blocked suspicious SQL query: {Query}, Session={SessionId}",
-                    queryText, session.SessionId);
+                0x00 => PROTOCOL_PGSQL_STARTUP, // スタートアップメッセージ（タイプバイトなし）
+                MSG_QUERY => PROTOCOL_PGSQL_QUERY,
+                MSG_PARSE => PROTOCOL_PGSQL_QUERY,
+                MSG_BIND => PROTOCOL_PGSQL_QUERY,
+                MSG_EXECUTE => PROTOCOL_PGSQL_QUERY,
+                MSG_TERMINATE => PROTOCOL_PGSQL_QUERY,
+                _ => PROTOCOL_PGSQL_DATA
+            };
 
-                await SendPostgreSqlErrorResponse(
-                    clientStream,
-                    "42000", // syntax_error_or_access_rule_violation
-                    "Query rejected by security policy");
-                return;
+            // SQLクエリの場合はセキュリティ検閲
+            if (messageType == MSG_QUERY || messageType == MSG_PARSE)
+            {
+                var sqlQuery = ExtractSqlQuery(messageData);
+
+                if (!string.IsNullOrEmpty(sqlQuery))
+                {
+                    Log.Debug("PostgreSQL Query: {SessionId}, SQL={Sql}", sessionId, sqlQuery);
+
+                    // SQLインジェクション検出
+                    if (DetectSqlInjection(sqlQuery))
+                    {
+                        Log.Warning("Blocked SQL injection attempt: {SessionId}, SQL={Sql}",
+                            sessionId, sqlQuery);
+
+                        await SendPostgreSqlError(clientStream,
+                            "FATAL", "42000", "Query rejected by security policy");
+                        return;
+                    }
+
+                    // 危険なSQL操作の検出
+                    if (DetectDangerousSql(sqlQuery))
+                    {
+                        Log.Warning("Blocked dangerous SQL operation: {SessionId}, SQL={Sql}",
+                            sessionId, sqlQuery);
+
+                        await SendPostgreSqlError(clientStream,
+                            "FATAL", "42000", "Dangerous operation rejected by security policy");
+                        return;
+                    }
+                }
             }
 
-            // YARAルールでスキャン（SQLインジェクションパターン）
-            var queryBytes = Encoding.UTF8.GetBytes(queryText);
-            if (_inspector.ScanData(queryBytes, $"PGSQL-Query-{session.SessionId}"))
-            {
-                Log.Warning("Blocked malicious SQL query by YARA: Session={SessionId}",
-                    session.SessionId);
+            // Raw Ethernetで送信（既存の暗号化レイヤーを使用）
+            var payload = BuildProtocolPayload(protocolType, sessionId, messageType, messageData);
+            await _transceiver.SendAsync(payload, _cts.Token);
 
-                await SendPostgreSqlErrorResponse(
-                    clientStream,
-                    "42000",
-                    "Query contains malicious patterns");
-                return;
-            }
-
-            // ログ記録（監査用）
-            session.QueryCount++;
-            LogSqlQuery(session.SessionId, queryText, session.DatabaseName, session.Username);
+            Log.Debug("Forwarded PostgreSQL message via Raw Ethernet: SessionId={SessionId}, Type=0x{Type:X2}",
+                sessionId, messageType);
         }
-
-        // Raw Ethernetで転送
-        var payload = BuildProtocolPayload(
-            PROTOCOL_POSTGRESQL_DATA,
-            session.SessionId,
-            new[] { messageType },
-            messageData.ToArray());
-
-        await _transceiver.SendAsync(payload, _cts.Token);
-    }
-
-    /// <summary>
-    /// 危険なSQLクエリを検出
-    /// </summary>
-    private bool IsSuspiciousSqlQuery(string query)
-    {
-        var dangerousPatterns = new[]
+        catch (Exception ex)
         {
-            "DROP TABLE",
-            "DROP DATABASE",
-            "DELETE FROM.*WHERE.*1=1",
-            "UPDATE.*SET.*WHERE.*1=1",
-            "TRUNCATE TABLE",
-            "ALTER TABLE",
-            "CREATE USER",
-            "GRANT ALL",
-            "; DROP",
-            "' OR '1'='1",
-            "' OR 1=1--",
-            "UNION SELECT",
-            "EXEC(", "EXECUTE(",
-            "xp_cmdshell",
-            "pg_sleep\\(",
-            "WAITFOR DELAY"
-        };
-
-        var upperQuery = query.ToUpperInvariant();
-
-        foreach (var pattern in dangerousPatterns)
-        {
-            if (System.Text.RegularExpressions.Regex.IsMatch(
-                upperQuery, 
-                pattern, 
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-            {
-                return true;
-            }
+            Log.Error(ex, "Error processing PostgreSQL message: {SessionId}", sessionId);
         }
-
-        return false;
-    }
-
-    /// <summary>
-    /// PostgreSQLエラーレスポンスを送信
-    /// </summary>
-    private async Task SendPostgreSqlErrorResponse(
-        NetworkStream stream,
-        string sqlState,
-        string message)
-    {
-        // PostgreSQL ErrorResponseフォーマット
-        using var ms = new MemoryStream();
-        ms.WriteByte((byte)'E'); // ErrorResponse
-
-        var errorFields = new List<byte[]>
-        {
-            Encoding.UTF8.GetBytes($"S{severity}\0"),
-            Encoding.UTF8.GetBytes($"C{sqlState}\0"),
-            Encoding.UTF8.GetBytes($"M{message}\0"),
-            new byte[] { 0 } // 終端
-        };
-
-        var errorData = errorFields.SelectMany(f => f).ToArray();
-        var length = 4 + errorData.Length;
-
-        ms.Write(BitConverter.GetBytes(IPAddress.HostToNetworkOrder(length)), 0, 4);
-        ms.Write(errorData, 0, errorData.Length);
-
-        await stream.WriteAsync(ms.ToArray(), _cts.Token);
-        await stream.FlushAsync(_cts.Token);
-    }
-
-    /// <summary>
-    /// SQLクエリをログに記録（監査用）
-    /// </summary>
-    private void LogSqlQuery(string sessionId, string query, string? database, string? username)
-    {
-        Log.Information("SQL_AUDIT: SessionId={SessionId}, User={User}, DB={Database}, Query={Query}",
-            sessionId,
-            username ?? "unknown",
-            database ?? "unknown",
-            query.Length > 200 ? query[..200] + "..." : query);
     }
 
     /// <summary>
@@ -373,44 +244,54 @@ public class PostgreSqlProxy : IDisposable
             if (payload.Length < 10) return;
 
             var protocolType = payload[0];
-
-            if (protocolType != PROTOCOL_POSTGRESQL_CONTROL && 
-                protocolType != PROTOCOL_POSTGRESQL_DATA)
-                return;
-
             var sessionId = Encoding.ASCII.GetString(payload, 1, 8);
             var messageType = payload[9];
             var data = payload[10..];
 
-            await _sessionLock.WaitAsync();
-            PostgreSqlSession? session = null;
-            try
+            // PostgreSQLプロトコルの処理
+            if (protocolType is PROTOCOL_PGSQL_STARTUP or PROTOCOL_PGSQL_QUERY 
+                or PROTOCOL_PGSQL_DATA or PROTOCOL_PGSQL_RESPONSE)
             {
-                _sessions.TryGetValue(sessionId, out session);
-            }
-            finally
-            {
-                _sessionLock.Release();
-            }
+                lock (_sessionLock)
+                {
+                    if (_sessions.TryGetValue(sessionId, out var session))
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var stream = session.Client.GetStream();
+                                
+                                // PostgreSQLメッセージ形式で返送
+                                var message = new byte[1 + 4 + data.Length];
+                                message[0] = messageType;
+                                BitConverter.GetBytes(IPAddress.HostToNetworkOrder(4 + data.Length))
+                                    .CopyTo(message, 1);
+                                data.CopyTo(message, 5);
 
-            if (session != null)
-            {
-                var stream = session.ClientSocket.GetStream();
-                await stream.WriteAsync(data, _cts.Token);
-                await stream.FlushAsync(_cts.Token);
+                                await stream.WriteAsync(message, _cts.Token);
+                                await stream.FlushAsync(_cts.Token);
 
-                Log.Debug("Forwarded PostgreSQL response: SessionId={SessionId}, Size={Size}",
-                    sessionId, data.Length);
+                                Log.Debug("Sent PostgreSQL response to client: SessionId={SessionId}, Type=0x{Type:X2}",
+                                    sessionId, messageType);
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Error(ex, "Error sending PostgreSQL response: {SessionId}", sessionId);
+                            }
+                        });
+                    }
+                }
             }
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Error handling Raw Ethernet packet for PostgreSQL");
+            Log.Error(ex, "Error handling Raw Ethernet packet");
         }
     }
 
     /// <summary>
-    /// PostgreSQLメッセージを読み取り
+    /// PostgreSQLメッセージを読み取る
     /// </summary>
     private bool TryReadPostgreSqlMessage(
         ref ReadOnlySequence<byte> buffer,
@@ -420,30 +301,169 @@ public class PostgreSqlProxy : IDisposable
         messageType = 0;
         messageData = default;
 
-        if (buffer.Length < 5) // 1バイト(type) + 4バイト(length)
-            return false;
+        // スタートアップメッセージ（最初の接続時のみ、タイプバイトなし）
+        if (buffer.Length >= 4)
+        {
+            var lengthBytes = buffer.Slice(0, 4).ToArray();
+            var length = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(lengthBytes, 0));
 
-        messageType = buffer.First.Span[0];
-        var lengthBytes = buffer.Slice(1, 4);
-        var length = ReadInt32BigEndian(lengthBytes);
+            if (length > 0 && length <= buffer.Length)
+            {
+                // スタートアップメッセージか判定（プロトコルバージョンチェック）
+                if (buffer.Length >= 8)
+                {
+                    var versionBytes = buffer.Slice(4, 4).ToArray();
+                    var version = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(versionBytes, 0));
 
-        if (buffer.Length < 1 + length)
-            return false;
+                    if (version == 196608) // PostgreSQL 3.0プロトコル
+                    {
+                        messageType = 0x00; // スタートアップメッセージ
+                        messageData = buffer.Slice(0, length);
+                        buffer = buffer.Slice(length);
+                        return true;
+                    }
+                }
+            }
+        }
 
-        messageData = buffer.Slice(5, length - 4);
-        buffer = buffer.Slice(1 + length);
+        // 通常のメッセージ（タイプ1バイト + 長さ4バイト + データ）
+        if (buffer.Length >= 5)
+        {
+            messageType = buffer.First.Span[0];
+            var lengthBytes = buffer.Slice(1, 4).ToArray();
+            var length = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(lengthBytes, 0));
 
-        return true;
+            if (length > 0 && 1 + length <= buffer.Length)
+            {
+                messageData = buffer.Slice(5, length - 4);
+                buffer = buffer.Slice(1 + length);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
-    /// Big Endianで4バイト整数を読み取り
+    /// SQLクエリを抽出
     /// </summary>
-    private int ReadInt32BigEndian(ReadOnlySequence<byte> buffer)
+    private string ExtractSqlQuery(ReadOnlySequence<byte> messageData)
     {
-        Span<byte> bytes = stackalloc byte[4];
-        buffer.Slice(0, 4).CopyTo(bytes);
-        return IPAddress.NetworkToHostOrder(BitConverter.ToInt32(bytes));
+        try
+        {
+            var data = messageData.ToArray();
+            
+            // Queryメッセージの場合、NULL終端文字列
+            var nullIndex = Array.IndexOf(data, (byte)0);
+            if (nullIndex > 0)
+            {
+                return Encoding.UTF8.GetString(data, 0, nullIndex);
+            }
+
+            return Encoding.UTF8.GetString(data);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// SQLインジェクション検出
+    /// </summary>
+    private bool DetectSqlInjection(string sql)
+    {
+        var patterns = new[]
+        {
+            "' OR '1'='1",
+            "' OR 1=1--",
+            "'; DROP TABLE",
+            "'; DELETE FROM",
+            "UNION SELECT",
+            "' UNION ALL SELECT",
+            "' AND 1=0 UNION ALL SELECT",
+            "'; EXEC",
+            "'; EXECUTE",
+            "' OR 'a'='a",
+            "admin'--",
+            "' OR ''='",
+            "1' AND '1'='1",
+            "' WAITFOR DELAY",
+            "'; SHUTDOWN--"
+        };
+
+        var upperSql = sql.ToUpperInvariant();
+
+        return patterns.Any(pattern => upperSql.Contains(pattern.ToUpperInvariant()));
+    }
+
+    /// <summary>
+    /// 危険なSQL操作の検出
+    /// </summary>
+    private bool DetectDangerousSql(string sql)
+    {
+        var upperSql = sql.ToUpperInvariant();
+
+        // WHERE句のないDELETE/UPDATE
+        if ((upperSql.Contains("DELETE FROM") || upperSql.Contains("UPDATE ")) &&
+            !upperSql.Contains("WHERE"))
+        {
+            return true;
+        }
+
+        // DROP/TRUNCATE文
+        if (upperSql.Contains("DROP TABLE") || upperSql.Contains("DROP DATABASE") ||
+            upperSql.Contains("TRUNCATE TABLE"))
+        {
+            return true;
+        }
+
+        // システムカタログへのアクセス
+        if (upperSql.Contains("PG_SHADOW") || upperSql.Contains("PG_AUTHID"))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// PostgreSQLエラーメッセージを送信
+    /// </summary>
+    private async Task SendPostgreSqlError(
+        NetworkStream stream,
+        string severity,
+        string code,
+        string message)
+    {
+        var errorFields = new List<byte>();
+
+        // Severity
+        errorFields.Add((byte)'S');
+        errorFields.AddRange(Encoding.UTF8.GetBytes(severity));
+        errorFields.Add(0);
+
+        // Code
+        errorFields.Add((byte)'C');
+        errorFields.AddRange(Encoding.UTF8.GetBytes(code));
+        errorFields.Add(0);
+
+        // Message
+        errorFields.Add((byte)'M');
+        errorFields.AddRange(Encoding.UTF8.GetBytes(message));
+        errorFields.Add(0);
+
+        // Terminator
+        errorFields.Add(0);
+
+        var errorMessage = new byte[1 + 4 + errorFields.Count];
+        errorMessage[0] = (byte)'E'; // ErrorResponse
+        BitConverter.GetBytes(IPAddress.HostToNetworkOrder(4 + errorFields.Count))
+            .CopyTo(errorMessage, 1);
+        errorFields.CopyTo(errorMessage, 5);
+
+        await stream.WriteAsync(errorMessage, _cts.Token);
+        await stream.FlushAsync(_cts.Token);
     }
 
     /// <summary>
@@ -452,14 +472,17 @@ public class PostgreSqlProxy : IDisposable
     private byte[] BuildProtocolPayload(
         byte protocolType,
         string sessionId,
-        byte[] messageTypeBytes,
-        byte[] data)
+        byte messageType,
+        ReadOnlySequence<byte> messageData)
     {
-        var payload = new byte[1 + 8 + messageTypeBytes.Length + data.Length];
+        var data = messageData.ToArray();
+        var payload = new byte[1 + 8 + 1 + data.Length];
+        
         payload[0] = protocolType;
         Encoding.ASCII.GetBytes(sessionId).CopyTo(payload, 1);
-        messageTypeBytes.CopyTo(payload, 9);
-        data.CopyTo(payload, 9 + messageTypeBytes.Length);
+        payload[9] = messageType;
+        data.CopyTo(payload, 10);
+        
         return payload;
     }
 
@@ -467,32 +490,34 @@ public class PostgreSqlProxy : IDisposable
     {
         _cts.Cancel();
         _listener.Stop();
-        _sessionLock.Dispose();
 
-        foreach (var session in _sessions.Values)
+        lock (_sessionLock)
         {
-            session.ClientSocket.Close();
+            foreach (var session in _sessions.Values)
+            {
+                session.Client.Close();
+            }
+            _sessions.Clear();
         }
 
-        _sessions.Clear();
         _isRunning = false;
-
         Log.Information("PostgreSqlProxy stopped");
     }
 
-    private const string severity = "ERROR";
-}
+    /// <summary>
+    /// PostgreSQLセッション情報
+    /// </summary>
+    private class PostgreSqlSession
+    {
+        public string SessionId { get; }
+        public TcpClient Client { get; }
+        public DateTime ConnectedAt { get; }
 
-/// <summary>
-/// PostgreSQLセッション情報
-/// </summary>
-internal class PostgreSqlSession
-{
-    public required string SessionId { get; init; }
-    public required TcpClient ClientSocket { get; init; }
-    public DateTime StartTime { get; init; }
-    public bool IsAuthenticated { get; set; }
-    public string? Username { get; set; }
-    public string? DatabaseName { get; set; }
-    public int QueryCount { get; set; }
+        public PostgreSqlSession(string sessionId, TcpClient client)
+        {
+            SessionId = sessionId;
+            Client = client;
+            ConnectedAt = DateTime.UtcNow;
+        }
+    }
 }
