@@ -4,6 +4,7 @@ using SharpPcap;
 using SharpPcap.LibPcap;
 using System.Collections.Concurrent;
 using System.Net.NetworkInformation;
+using System.Security.Cryptography;
 using System.Threading.Channels;
 using Serilog;
 

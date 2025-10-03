@@ -51,30 +51,18 @@ class CryptoTestConsole
 
     static void TestKeyGeneration()
     {
-        Log.Information("--- Test 1: Key Generation and DPAPI Protection ---");
+        Log.Information("--- Test 1: Key Generation ---");
 
-        var keyFile = "test_master.key";
-
-        // キー生成
-        CryptoEngine.GenerateAndSaveProtectedKey(keyFile);
-        Log.Information("✓ Key generated and saved");
-
-        // キー読み込み
-        using var engine = CryptoEngine.FromProtectedKeyFile(keyFile);
-        Log.Information("✓ Key loaded from protected file");
-
-        // クリーンアップ
-        File.Delete(keyFile);
+        // パスワードベースのキー生成
+        using var engine = new CryptoEngine("test_password_123");
+        Log.Information("✓ Key generated from password");
     }
 
     static void TestBasicEncryption()
     {
         Log.Information("--- Test 2: Basic Encryption/Decryption ---");
 
-        var keyFile = "test_basic.key";
-        CryptoEngine.GenerateAndSaveProtectedKey(keyFile);
-
-        using var engine = CryptoEngine.FromProtectedKeyFile(keyFile);
+        using var engine = new CryptoEngine("test_password_123");
 
         var plaintext = "Hello, Non-IP File Delivery System! 日本語テスト 🍣"u8.ToArray();
         Log.Information("Plaintext: {Size} bytes", plaintext.Length);
@@ -94,18 +82,13 @@ class CryptoTestConsole
         }
 
         Log.Information("✓ Plaintext matches decrypted data");
-
-        File.Delete(keyFile);
     }
 
     static void TestReplayAttackDetection()
     {
         Log.Information("--- Test 3: Replay Attack Detection ---");
 
-        var keyFile = "test_replay.key";
-        CryptoEngine.GenerateAndSaveProtectedKey(keyFile);
-
-        using var engine = CryptoEngine.FromProtectedKeyFile(keyFile);
+        using var engine = new CryptoEngine("test_password_123");
 
         var plaintext = "Secret Message"u8.ToArray();
 
@@ -132,18 +115,13 @@ class CryptoTestConsole
         {
             Log.Information("✓ Replay attack detected: {Message}", ex.Message);
         }
-
-        File.Delete(keyFile);
     }
 
     static void TestSecureFrameEncryption()
     {
         Log.Information("--- Test 4: Secure Ethernet Frame Encryption ---");
 
-        var keyFile = "test_frame.key";
-        CryptoEngine.GenerateAndSaveProtectedKey(keyFile);
-
-        using var engine = CryptoEngine.FromProtectedKeyFile(keyFile);
+        using var engine = new CryptoEngine("test_password_123");
 
         // FTPコマンドをシミュレート
         var ftpCommand = "USER anonymous\r\n"u8.ToArray();
@@ -179,18 +157,13 @@ class CryptoTestConsole
         }
 
         Log.Information("✓ Original payload matches decrypted payload");
-
-        File.Delete(keyFile);
     }
 
     static void TestPerformance()
     {
         Log.Information("--- Test 5: Performance Test (2Gbps Requirement) ---");
 
-        var keyFile = "test_perf.key";
-        CryptoEngine.GenerateAndSaveProtectedKey(keyFile);
-
-        using var engine = CryptoEngine.FromProtectedKeyFile(keyFile);
+        using var engine = new CryptoEngine("test_password_123");
 
         // 1MBのテストデータ
         var testData = new byte[1024 * 1024];
@@ -228,7 +201,5 @@ class CryptoTestConsole
             Log.Warning("✗ Performance requirement NOT met (< 2Gbps)");
             Log.Warning("  Consider enabling hardware AES-NI acceleration");
         }
-
-        File.Delete(keyFile);
     }
 }
