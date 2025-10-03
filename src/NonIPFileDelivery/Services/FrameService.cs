@@ -1,139 +1,114 @@
-// FrameService.cs（修正箇所のみ抜粋）
+// FrameService.cs（既存ファイルに追加・修正）
 
-public class FrameService : IFrameService
+using NonIPFileDelivery.Services;
+
+namespace NonIPFileDelivery.Services
 {
-    private readonly ILoggingService _logger;
-    private readonly ICryptoService _cryptoService; // 🆕 追加
-    private int _sequenceNumber;
-
-    public FrameService(ILoggingService logger, ICryptoService cryptoService) // 🆕 修正
+    public class FrameService : IFrameService
     {
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _cryptoService = cryptoService ?? throw new ArgumentNullException(nameof(cryptoService)); // 🆕 追加
-        _sequenceNumber = 0;
-    }
+        private readonly ILoggingService _logger;
+        private readonly ICryptoService _cryptoService; // 🆕 追加
+        private int _sequenceNumber;
 
-    /// <summary>
-    /// フレームをシリアライズ（暗号化統合）
-    /// </summary>
-    public byte[] SerializeFrame(NonIPFrame frame)
-    {
-        if (frame == null)
-            throw new ArgumentNullException(nameof(frame));
-
-        // 🆕 暗号化処理追加
-        if ((frame.Header.Flags & FrameFlags.Encrypted) != 0)
+        // 🆕 コンストラクタ修正（ICryptoServiceを追加）
+        public FrameService(ILoggingService logger, ICryptoService cryptoService)
         {
-            _logger.Debug($"Encrypting frame payload ({frame.Payload.Length} bytes)");
-            frame.Payload = _cryptoService.Encrypt(frame.Payload);
-            _logger.Debug($"Payload encrypted ({frame.Payload.Length} bytes)");
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _cryptoService = cryptoService ?? throw new ArgumentNullException(nameof(cryptoService));
+            _sequenceNumber = 0;
         }
 
-        // フレーム構築
-        using var ms = new MemoryStream();
-        using var writer = new BinaryWriter(ms);
-
-        // Ethernet Header
-        writer.Write(frame.Header.DestinationMAC);
-        writer.Write(frame.Header.SourceMAC);
-        writer.Write((ushort)0x88B5); // EtherType
-
-        // Custom Protocol Header
-        writer.Write((byte)frame.Header.Type);
-        writer.Write((ushort)frame.Header.SequenceNumber);
-        writer.Write((ushort)frame.Payload.Length);
-        writer.Write((byte)frame.Header.Flags);
-
-        // Payload
-        writer.Write(frame.Payload);
-
-        var frameData = ms.ToArray();
-
-        // CRC32計算
-        var checksum = Crc32Calculator.Calculate(frameData);
-        writer.Write(checksum);
-
-        var finalFrame = ms.ToArray();
-
-        _logger.Debug($"Frame serialized: SeqNum={frame.Header.SequenceNumber}, PayloadSize={frame.Payload.Length}, TotalSize={finalFrame.Length}");
-
-        return finalFrame;
-    }
-
-    /// <summary>
-    /// フレームをデシリアライズ（復号化統合）
-    /// </summary>
-    public NonIPFrame? DeserializeFrame(byte[] data)
-    {
-        if (data == null || data.Length < 24) // 最小フレームサイズ
-            return null;
-
-        try
+        /// <summary>
+        /// フレームをシリアライズ（暗号化対応）
+        /// </summary>
+        public byte[] SerializeFrame(NonIPFrame frame)
         {
-            using var ms = new MemoryStream(data);
-            using var reader = new BinaryReader(ms);
+            if (frame == null)
+                throw new ArgumentNullException(nameof(frame));
 
-            // Ethernet Header
-            var destMac = reader.ReadBytes(6);
-            var srcMac = reader.ReadBytes(6);
-            var etherType = reader.ReadUInt16();
-
-            if (etherType != 0x88B5)
+            try
             {
-                _logger.Warning($"Invalid EtherType: 0x{etherType:X4}");
-                return null;
-            }
-
-            // Custom Protocol Header
-            var type = (FrameType)reader.ReadByte();
-            var seqNum = reader.ReadUInt16();
-            var payloadLength = reader.ReadUInt16();
-            var flags = (FrameFlags)reader.ReadByte();
-
-            // Payload
-            var payload = reader.ReadBytes(payloadLength);
-
-            // CRC32検証
-            var storedChecksum = reader.ReadUInt32();
-            var calculatedChecksum = Crc32Calculator.Calculate(data.Take(data.Length - 4).ToArray());
-
-            if (storedChecksum != calculatedChecksum)
-            {
-                _logger.Error($"CRC32 mismatch: stored=0x{storedChecksum:X8}, calculated=0x{calculatedChecksum:X8}");
-                return null;
-            }
-
-            // 🆕 復号化処理追加
-            if ((flags & FrameFlags.Encrypted) != 0)
-            {
-                _logger.Debug($"Decrypting frame payload ({payload.Length} bytes)");
-                payload = _cryptoService.Decrypt(payload);
-                _logger.Debug($"Payload decrypted ({payload.Length} bytes)");
-            }
-
-            var frame = new NonIPFrame
-            {
-                Header = new FrameHeader
+                // 🆕 暗号化フラグが立っている場合、Payloadを暗号化
+                if ((frame.Header.Flags & FrameFlags.Encrypted) != 0)
                 {
-                    DestinationMAC = destMac,
-                    SourceMAC = srcMac,
-                    Type = type,
-                    SequenceNumber = seqNum,
-                    Flags = flags
-                },
-                Payload = payload
-            };
+                    _logger.Debug($"Encrypting frame payload ({frame.Payload.Length} bytes)");
+                    frame.Payload = _cryptoService.Encrypt(frame.Payload);
+                    _logger.Debug($"Encrypted payload size: {frame.Payload.Length} bytes");
+                }
 
-            _logger.Debug($"Frame deserialized: SeqNum={seqNum}, PayloadSize={payload.Length}");
+                // フレームのシリアライズ（既存ロジック）
+                var headerBytes = SerializeHeader(frame.Header);
+                var frameData = new byte[headerBytes.Length + frame.Payload.Length];
+                
+                Buffer.BlockCopy(headerBytes, 0, frameData, 0, headerBytes.Length);
+                Buffer.BlockCopy(frame.Payload, 0, frameData, headerBytes.Length, frame.Payload.Length);
 
-            return frame;
+                // CRC32計算
+                var checksum = Crc32Calculator.Calculate(frameData);
+                var result = new byte[frameData.Length + 4];
+                
+                Buffer.BlockCopy(frameData, 0, result, 0, frameData.Length);
+                Buffer.BlockCopy(BitConverter.GetBytes(checksum), 0, result, frameData.Length, 4);
+
+                _logger.Debug($"Frame serialized: {result.Length} bytes (Checksum: 0x{checksum:X8})");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Frame serialization failed: {ex.Message}", ex);
+                throw;
+            }
         }
-        catch (Exception ex)
+
+        /// <summary>
+        /// フレームをデシリアライズ（復号化対応）
+        /// </summary>
+        public NonIPFrame? DeserializeFrame(byte[] data)
         {
-            _logger.Error($"Frame deserialization error: {ex.Message}", ex);
-            return null;
-        }
-    }
+            if (data == null || data.Length < 24) // 最小フレームサイズ
+                return null;
 
-    // ... その他のメソッドは既存のまま
+            try
+            {
+                // CRC32検証（既存ロジック）
+                var receivedChecksum = BitConverter.ToUInt32(data, data.Length - 4);
+                var frameData = new byte[data.Length - 4];
+                Buffer.BlockCopy(data, 0, frameData, 0, frameData.Length);
+                var calculatedChecksum = Crc32Calculator.Calculate(frameData);
+
+                if (receivedChecksum != calculatedChecksum)
+                {
+                    _logger.Warning($"CRC32 mismatch: expected 0x{receivedChecksum:X8}, got 0x{calculatedChecksum:X8}");
+                    return null;
+                }
+
+                // ヘッダー解析（既存ロジック）
+                var header = DeserializeHeader(frameData);
+                var payload = new byte[header.PayloadLength];
+                Buffer.BlockCopy(frameData, 20, payload, 0, payload.Length); // Ethernet(14) + CustomHeader(6)
+
+                // 🆕 暗号化フラグが立っている場合、Payloadを復号化
+                if ((header.Flags & FrameFlags.Encrypted) != 0)
+                {
+                    _logger.Debug($"Decrypting frame payload ({payload.Length} bytes)");
+                    payload = _cryptoService.Decrypt(payload);
+                    _logger.Debug($"Decrypted payload size: {payload.Length} bytes");
+                }
+
+                return new NonIPFrame
+                {
+                    Header = header,
+                    Payload = payload,
+                    Checksum = receivedChecksum
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Frame deserialization failed: {ex.Message}", ex);
+                return null;
+            }
+        }
+
+        // ... 既存メソッド（CreateHeartbeatFrame, CreateDataFrame等）は変更なし
+    }
 }
