@@ -8,9 +8,9 @@ namespace NonIpFileDelivery.Tools;
 /// <summary>
 /// 暗号化レイヤーのテストコンソールアプリ
 /// </summary>
-class CryptoTestConsole
+public class CryptoTestConsole
 {
-    static void Main(string[] args)
+    public static void RunTests(string[] args)
     {
         // ロギング初期化
         Log.Logger = new LoggerConfiguration()

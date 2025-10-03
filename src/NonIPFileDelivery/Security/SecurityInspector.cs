@@ -11,7 +11,6 @@ public class SecurityInspector : IDisposable
 {
     private readonly HashSet<string> _detectedThreats;
     private readonly object _lockObject = new();
-    private readonly bool _yaraEnabled;
 
     /// <summary>
     /// YARAルールファイルからセキュリティインスペクターを初期化
@@ -20,7 +19,6 @@ public class SecurityInspector : IDisposable
     public SecurityInspector(params string[] rulesPath)
     {
         _detectedThreats = new HashSet<string>();
-        _yaraEnabled = false;
 
         // YARA統合は今後の実装
         // dnYara 2.1.0 API との互換性の問題があるため、現在は無効化

@@ -594,48 +594,63 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 
 ## 🔄 更新履歴
 
-### 最新の状態（2025-01-10更新）
+### 最新の状態（2025年1月更新）
 
-#### ✅ 実装済み機能（Phase 1-2）
+#### ✅ 実装済み機能（Phase 1-4）
 - ✅ 基本的なRaw Ethernetフレーム送受信
-- ✅ FTPプロトコル解析（40種類以上のコマンド対応）
-- ✅ PostgreSQLプロトコル解析
+- ✅ FTPプロトコル解析とプロキシ機能
+- ✅ SFTPプロトコル対応（SSH.NET統合）
+- ✅ PostgreSQLプロトコル解析とプロキシ機能
 - ✅ SQLインジェクション検出（15種類のパターン）
 - ✅ AES-256-GCM暗号化/復号化
 - ✅ CRC32チェックサム検証
+- ✅ SecureEthernetFrame構造による安全な通信
 - ✅ TPL Dataflowパイプライン処理
-- ✅ 構造化ログ（Serilog）
+- ✅ 構造化ログ（Serilog + Elasticsearch/Seq対応）
 - ✅ コンフィグ管理（INI/JSON）
+- ✅ Web設定UI（NonIPWebConfig）
 
 #### ⚠️ 部分実装・未検証の機能（Phase 2-3）
 - ⚠️ セッション管理機能（実装済み、未検証）
 - ⚠️ フラグメント処理（実装済み、未検証）
 - ⚠️ 再送制御（実装済み、未検証）
 - ⚠️ QoS機能（実装済み、未検証）
-- ⚠️ マルウェアスキャン（YARA、ClamAV連携は実装済みだが外部依存関係が未設定）
+- ⚠️ YARAマルウェアスキャン（基本的なパターンマッチングのみ実装、完全なYARA統合は保留）
+- ⚠️ ClamAVスキャン（インターフェース実装済み、外部デーモン接続未検証）
 - ⚠️ パフォーマンス要件（2Gbps、10ms以下）は未検証
 
 #### ❌ 未実装の機能
 - ❌ ユニットテスト（testsディレクトリが存在しない）
 - ❌ 統合テスト
 - ❌ パフォーマンステストの実行・検証
-- ❌ Web UI設定ツール完全版
+- ❌ 完全なYARA統合（dnYara 2.1.0 APIの制約により簡略化）
 - ❌ 冗長化機能の実装・検証
 - ❌ 負荷分散機能の実装・検証
 
-#### 🔧 修正済みの問題（2025-01-10）
-- ✅ ビルドエラー18件を修正（プロジェクトはコンパイル可能）
-- ✅ Serilogパッケージの不足を解消（WithMachineName、WithThreadId）
-- ✅ インターフェース実装の不整合を修正
-- ✅ プロパティ名のtypo修正（SourceMac → SourceMAC）
+#### 🔧 修正済みの問題（最新のコミット）
+- ✅ **ビルド成功**: プロジェクト全体がコンパイル可能になりました
+- ✅ 重複ファイルの削除（PostgresqlProxy.cs、NonIpFileDelivery.csproj、functionaldesign.md）
+- ✅ 必須パッケージ参照の追加（System.IO.Pipelines、SSH.NET、dnYara）
+- ✅ dnYaraバージョン修正（4.2.0 → 2.1.0）
+- ✅ SecurityInspectorの簡略化（dnYara API互換性の問題に対応）
+- ✅ CryptoTestConsoleの修正（実際のAPIに合わせて更新）
+- ✅ SecureEthernetFrameのstruct修正問題を解決
+- ✅ 不足していたusing directiveの追加
+- ✅ Crc32のIDisposable問題を修正
 
 ### ⚠️ 重要な注意事項
 **このプロジェクトは現在開発中であり、以下の制限があります：**
 
 1. **テストが存在しない**: ユニットテスト、統合テストが実装されていないため、動作保証ができません
 2. **性能未検証**: ドキュメントに記載されている性能要件（2Gbps、10ms以下）は実測値ではありません
-3. **外部依存関係の不足**: YARA、ClamAVなどの外部ライブラリが完全には統合されていません
+3. **外部依存関係の制限**: 
+   - YARAスキャンは基本的なパターンマッチングのみ（完全なdnYara統合は保留中）
+   - ClamAVはインターフェースのみ実装（外部デーモン接続未検証）
 4. **運用環境での使用は推奨されません**: 十分なテストが完了していないため、実運用での使用は避けてください
+5. **ビルド環境**: 
+   - .NET 8.0が必要
+   - Windows環境推奨（Raw Ethernet機能はWindows向け）
+   - SharpPcapはWinPcap/Npcapのインストールが必要
 
 ### バージョン管理方針
 - 自動更新機能は提供しません
