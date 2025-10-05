@@ -683,8 +683,7 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - [ ] ClamAV統合の完全実装
 - [ ] Web UI設定ツール完全版
 - [ ] 追加セキュリティエンジン統合
-- [ ] クラウド連携機能
-- [ ] モバイル管理アプリ
+- [ ] 非IP送受信機能のB装置側
 
 ---
 
