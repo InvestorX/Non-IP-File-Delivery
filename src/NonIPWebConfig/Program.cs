@@ -1,4 +1,7 @@
 using System.Text.Json;
+using NonIPWebConfig.Services;
+using NonIPWebConfig.Models;
+using Microsoft.AspNetCore.StaticFiles;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,256 +16,192 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Register services
+var baseConfigPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "..");
+builder.Services.AddSingleton(new ConfigurationService(baseConfigPath));
+builder.Services.AddSingleton<NetworkInterfaceService>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
 app.UseCors();
 
 // Serve static files (HTML, CSS, JS)
-app.UseStaticFiles();
-
-// API endpoints
-app.MapGet("/", () => Results.Content("""
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Non-IP File Delivery Web Configuration</title>
-    <style>
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            margin: 0; 
-            padding: 20px; 
-            background-color: #f5f5f5; 
-        }
-        .container { 
-            max-width: 1200px; 
-            margin: 0 auto; 
-            background: white; 
-            padding: 30px; 
-            border-radius: 10px; 
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
-        }
-        h1 { 
-            color: #2c3e50; 
-            text-align: center; 
-            margin-bottom: 30px; 
-        }
-        .config-section { 
-            margin: 20px 0; 
-            border: 1px solid #ddd; 
-            border-radius: 5px; 
-            padding: 15px; 
-        }
-        .config-section h3 { 
-            margin-top: 0; 
-            color: #34495e; 
-        }
-        .form-group { 
-            margin-bottom: 15px; 
-        }
-        label { 
-            display: block; 
-            margin-bottom: 5px; 
-            font-weight: bold; 
-        }
-        input, select, textarea { 
-            width: 100%; 
-            padding: 8px; 
-            border: 1px solid #ddd; 
-            border-radius: 4px; 
-            box-sizing: border-box; 
-        }
-        button { 
-            background-color: #3498db; 
-            color: white; 
-            padding: 10px 20px; 
-            border: none; 
-            border-radius: 4px; 
-            cursor: pointer; 
-            font-size: 16px; 
-        }
-        button:hover { 
-            background-color: #2980b9; 
-        }
-        .status { 
-            padding: 10px; 
-            margin: 10px 0; 
-            border-radius: 4px; 
-        }
-        .success { 
-            background-color: #d4edda; 
-            color: #155724; 
-            border: 1px solid #c3e6cb; 
-        }
-        .error { 
-            background-color: #f8d7da; 
-            color: #721c24; 
-            border: 1px solid #f5c6cb; 
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🛡️ Non-IP File Delivery Web Configuration</h1>
-        <p style="text-align: center; color: #666;">ハッカー・クラッカー・ランサムウェア対策のためのRaw Ethernet非IPファイル転送システム</p>
-        
-        <div id="status"></div>
-        
-        <form id="configForm">
-            <div class="config-section">
-                <h3>🔧 一般設定</h3>
-                <div class="form-group">
-                    <label for="mode">動作モード:</label>
-                    <select id="mode" name="mode">
-                        <option value="ActiveStandby">アクティブ-スタンバイ</option>
-                        <option value="LoadBalancing">ロードバランシング</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="logLevel">ログレベル:</label>
-                    <select id="logLevel" name="logLevel">
-                        <option value="Debug">Debug</option>
-                        <option value="Info">Info</option>
-                        <option value="Warning" selected>Warning</option>
-                        <option value="Error">Error</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="config-section">
-                <h3>🌐 ネットワーク設定</h3>
-                <div class="form-group">
-                    <label for="interface">ネットワークインターフェース:</label>
-                    <input type="text" id="interface" name="interface" value="eth0">
-                </div>
-                <div class="form-group">
-                    <label for="frameSize">フレームサイズ:</label>
-                    <input type="number" id="frameSize" name="frameSize" value="9000">
-                </div>
-                <div class="form-group">
-                    <label for="encryption">暗号化有効:</label>
-                    <select id="encryption" name="encryption">
-                        <option value="true" selected>有効</option>
-                        <option value="false">無効</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="config-section">
-                <h3>🔐 セキュリティ設定</h3>
-                <div class="form-group">
-                    <label for="enableVirusScan">ウイルススキャン有効:</label>
-                    <select id="enableVirusScan" name="enableVirusScan">
-                        <option value="true" selected>有効</option>
-                        <option value="false">無効</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="scanTimeout">スキャンタイムアウト (ms):</label>
-                    <input type="number" id="scanTimeout" name="scanTimeout" value="5000">
-                </div>
-                <div class="form-group">
-                    <label for="quarantinePath">隔離パス:</label>
-                    <input type="text" id="quarantinePath" name="quarantinePath" value="C:\\NonIP\\Quarantine">
-                </div>
-            </div>
-            
-            <button type="submit">💾 設定を保存</button>
-            <button type="button" onclick="loadConfig()">📁 設定を読み込み</button>
-        </form>
-    </div>
-    
-    <script>
-        document.getElementById('configForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            saveConfig();
-        });
-        
-        function saveConfig() {
-            const formData = new FormData(document.getElementById('configForm'));
-            const config = {};
-            
-            for (let [key, value] of formData.entries()) {
-                config[key] = value;
-            }
-            
-            fetch('/api/config', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(config)
-            })
-            .then(response => response.json())
-            .then(data => {
-                showStatus(data.message, data.success ? 'success' : 'error');
-            })
-            .catch(error => {
-                showStatus('設定の保存中にエラーが発生しました: ' + error.message, 'error');
-            });
-        }
-        
-        function loadConfig() {
-            fetch('/api/config')
-            .then(response => response.json())
-            .then(config => {
-                Object.keys(config).forEach(key => {
-                    const element = document.getElementById(key);
-                    if (element) {
-                        element.value = config[key];
-                    }
-                });
-                showStatus('設定を読み込みました', 'success');
-            })
-            .catch(error => {
-                showStatus('設定の読み込み中にエラーが発生しました: ' + error.message, 'error');
-            });
-        }
-        
-        function showStatus(message, type) {
-            const statusDiv = document.getElementById('status');
-            statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
-            setTimeout(() => {
-                statusDiv.innerHTML = '';
-            }, 5000);
-        }
-        
-        // Load initial config
-        loadConfig();
-    </script>
-</body>
-</html>
-""", "text/html"));
-
-app.MapGet("/api/config", () => 
+var provider = new FileExtensionContentTypeProvider();
+app.UseStaticFiles(new StaticFileOptions
 {
-    // Return current configuration
-    var defaultConfig = new
-    {
-        mode = "ActiveStandby",
-        logLevel = "Warning",
-        @interface = "eth0",
-        frameSize = "9000",
-        encryption = "true",
-        enableVirusScan = "true",
-        scanTimeout = "5000",
-        quarantinePath = "C:\\NonIP\\Quarantine"
-    };
-    
-    return Results.Json(defaultConfig);
+    ContentTypeProvider = provider
 });
+app.UseDefaultFiles();
 
-app.MapPost("/api/config", (JsonElement config) =>
+// API: Get network interfaces
+app.MapGet("/api/interfaces", (NetworkInterfaceService networkService) =>
 {
     try
     {
-        // Here you would save the configuration to a file
-        // For now, just simulate success
-        Console.WriteLine($"📝 Configuration saved: {config}");
+        var interfaces = networkService.GetNetworkInterfaces();
+        return Results.Json(interfaces);
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, message = $"Failed to get interfaces: {ex.Message}" });
+    }
+});
+
+// API: Get configuration for Device A
+app.MapGet("/api/config/a", async (ConfigurationService configService) =>
+{
+    try
+    {
+        var appConfig = await configService.LoadDeviceAConfigAsync();
+        var iniConfig = await configService.LoadIniConfigAsync();
         
-        return Results.Json(new { success = true, message = "設定が正常に保存されました" });
+        var config = new
+        {
+            // General
+            mode = iniConfig.General.Mode,
+            logLevel = iniConfig.General.LogLevel,
+            
+            // Network
+            interfaceName = appConfig.Network.InterfaceName,
+            remoteMacAddress = appConfig.Network.RemoteMacAddress,
+            frameSize = iniConfig.Network.FrameSize,
+            encryption = iniConfig.Network.Encryption.ToString().ToLower(),
+            etherType = appConfig.Network.CustomEtherType,
+            
+            // FTP
+            ftpEnabled = appConfig.Protocols.Ftp.Enabled,
+            ftpListenPort = appConfig.Protocols.Ftp.ListenPort,
+            ftpTargetHost = appConfig.Protocols.Ftp.TargetHost,
+            ftpTargetPort = appConfig.Protocols.Ftp.TargetPort,
+            
+            // SFTP
+            sftpEnabled = appConfig.Protocols.Sftp.Enabled,
+            sftpListenPort = appConfig.Protocols.Sftp.ListenPort,
+            sftpTargetHost = appConfig.Protocols.Sftp.TargetHost,
+            sftpTargetPort = appConfig.Protocols.Sftp.TargetPort,
+            
+            // PostgreSQL
+            postgresqlEnabled = appConfig.Protocols.Postgresql.Enabled,
+            postgresqlListenPort = appConfig.Protocols.Postgresql.ListenPort,
+            postgresqlTargetHost = appConfig.Protocols.Postgresql.TargetHost,
+            postgresqlTargetPort = appConfig.Protocols.Postgresql.TargetPort,
+            
+            // Security
+            enableVirusScan = iniConfig.Security.EnableVirusScan,
+            enableDeepInspection = appConfig.Security.EnableDeepInspection,
+            scanTimeout = appConfig.Security.ScanTimeout,
+            quarantinePath = iniConfig.Security.QuarantinePath,
+            yaraRulesPath = appConfig.Security.YaraRulesPath,
+            
+            // Performance
+            receiveBufferSize = appConfig.Performance.ReceiveBufferSize,
+            maxConcurrentSessions = appConfig.Performance.MaxConcurrentSessions,
+            enableZeroCopy = appConfig.Performance.EnableZeroCopy,
+            maxMemoryMB = iniConfig.Performance.MaxMemoryMB,
+            bufferSize = iniConfig.Performance.BufferSize,
+            
+            // Redundancy
+            heartbeatInterval = iniConfig.Redundancy.HeartbeatInterval,
+            failoverTimeout = iniConfig.Redundancy.FailoverTimeout,
+            dataSyncMode = iniConfig.Redundancy.DataSyncMode
+        };
+        
+        return Results.Json(config);
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, message = $"Failed to load config: {ex.Message}" });
+    }
+});
+
+// API: Get configuration for Device B
+app.MapGet("/api/config/b", async (ConfigurationService configService) =>
+{
+    try
+    {
+        var appConfig = await configService.LoadDeviceBConfigAsync();
+        var iniConfig = await configService.LoadIniConfigAsync();
+        
+        var config = new
+        {
+            // General
+            mode = iniConfig.General.Mode,
+            logLevel = iniConfig.General.LogLevel,
+            
+            // Network
+            interfaceName = appConfig.Network.InterfaceName,
+            remoteMacAddress = appConfig.Network.RemoteMacAddress,
+            frameSize = iniConfig.Network.FrameSize,
+            encryption = iniConfig.Network.Encryption.ToString().ToLower(),
+            etherType = appConfig.Network.CustomEtherType,
+            
+            // FTP (B-side has no listen port)
+            ftpEnabled = appConfig.Protocols.Ftp.Enabled,
+            ftpTargetHost = appConfig.Protocols.Ftp.TargetHost,
+            ftpTargetPort = appConfig.Protocols.Ftp.TargetPort,
+            
+            // SFTP
+            sftpEnabled = appConfig.Protocols.Sftp.Enabled,
+            sftpTargetHost = appConfig.Protocols.Sftp.TargetHost,
+            sftpTargetPort = appConfig.Protocols.Sftp.TargetPort,
+            
+            // PostgreSQL
+            postgresqlEnabled = appConfig.Protocols.Postgresql.Enabled,
+            postgresqlTargetHost = appConfig.Protocols.Postgresql.TargetHost,
+            postgresqlTargetPort = appConfig.Protocols.Postgresql.TargetPort,
+            
+            // Security
+            enableVirusScan = iniConfig.Security.EnableVirusScan,
+            enableDeepInspection = appConfig.Security.EnableDeepInspection,
+            scanTimeout = appConfig.Security.ScanTimeout,
+            quarantinePath = iniConfig.Security.QuarantinePath,
+            yaraRulesPath = appConfig.Security.YaraRulesPath,
+            
+            // Performance
+            receiveBufferSize = appConfig.Performance.ReceiveBufferSize,
+            maxConcurrentSessions = appConfig.Performance.MaxConcurrentSessions,
+            enableZeroCopy = appConfig.Performance.EnableZeroCopy,
+            maxMemoryMB = iniConfig.Performance.MaxMemoryMB,
+            bufferSize = iniConfig.Performance.BufferSize,
+            
+            // Redundancy
+            heartbeatInterval = iniConfig.Redundancy.HeartbeatInterval,
+            failoverTimeout = iniConfig.Redundancy.FailoverTimeout,
+            dataSyncMode = iniConfig.Redundancy.DataSyncMode
+        };
+        
+        return Results.Json(config);
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, message = $"Failed to load config: {ex.Message}" });
+    }
+});
+
+// API: Save configuration for Device A
+app.MapPost("/api/config/a", async (JsonElement configJson, ConfigurationService configService) =>
+{
+    try
+    {
+        var config = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(configJson.GetRawText());
+        if (config == null)
+        {
+            return Results.Json(new { success = false, message = "Invalid configuration data" });
+        }
+        
+        // Load existing configs
+        var appConfig = await configService.LoadDeviceAConfigAsync();
+        var iniConfig = await configService.LoadIniConfigAsync();
+        
+        // Update configs
+        UpdateConfigFromDictionary(config, appConfig, iniConfig, true);
+        
+        // Save configs
+        await configService.SaveDeviceAConfigAsync(appConfig);
+        await configService.SaveIniConfigAsync(iniConfig);
+        
+        return Results.Json(new { success = true, message = "非IP送受信機Aの設定が正常に保存されました" });
     }
     catch (Exception ex)
     {
@@ -270,16 +209,50 @@ app.MapPost("/api/config", (JsonElement config) =>
     }
 });
 
+// API: Save configuration for Device B
+app.MapPost("/api/config/b", async (JsonElement configJson, ConfigurationService configService) =>
+{
+    try
+    {
+        var config = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(configJson.GetRawText());
+        if (config == null)
+        {
+            return Results.Json(new { success = false, message = "Invalid configuration data" });
+        }
+        
+        // Load existing configs
+        var appConfig = await configService.LoadDeviceBConfigAsync();
+        var iniConfig = await configService.LoadIniConfigAsync();
+        
+        // Update configs
+        UpdateConfigFromDictionary(config, appConfig, iniConfig, false);
+        
+        // Save configs
+        await configService.SaveDeviceBConfigAsync(appConfig);
+        await configService.SaveIniConfigAsync(iniConfig);
+        
+        return Results.Json(new { success = true, message = "非IP送受信機Bの設定が正常に保存されました" });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, message = $"設定の保存に失敗しました: {ex.Message}" });
+    }
+});
+
+// API: Get system status
 app.MapGet("/api/status", () =>
 {
-    return Results.Json(new
+    // TODO: Implement actual status monitoring
+    // For now, return mock data
+    return Results.Json(new SystemStatus
     {
-        status = "running",
-        version = "1.0.0",
-        uptime = "00:05:23",
-        throughput = "1.2 Gbps",
-        connections = 42,
-        memory_usage = "2.1 GB"
+        Status = "stopped",
+        Version = "1.0.0",
+        Uptime = "00:00:00",
+        Throughput = "0 Gbps",
+        Connections = 0,
+        MemoryUsage = "0 MB",
+        LastUpdated = DateTime.Now
     });
 });
 
@@ -287,3 +260,82 @@ Console.WriteLine("🌐 Non-IP Web Configuration Tool が起動しました");
 Console.WriteLine("📱 ブラウザで http://localhost:8080 を開いてください");
 
 app.Run("http://localhost:8080");
+
+// Helper method to update configuration from dictionary
+static void UpdateConfigFromDictionary(Dictionary<string, JsonElement> config, AppSettingsModel appConfig, IniConfigModel iniConfig, bool isDeviceA)
+{
+    // General
+    if (config.ContainsKey("mode")) iniConfig.General.Mode = GetStringValue(config["mode"]);
+    if (config.ContainsKey("logLevel")) iniConfig.General.LogLevel = GetStringValue(config["logLevel"]);
+    
+    // Network
+    if (config.ContainsKey("interfaceName")) appConfig.Network.InterfaceName = GetStringValue(config["interfaceName"]);
+    if (config.ContainsKey("remoteMacAddress")) appConfig.Network.RemoteMacAddress = GetStringValue(config["remoteMacAddress"]);
+    if (config.ContainsKey("frameSize")) iniConfig.Network.FrameSize = GetIntValue(config["frameSize"]);
+    if (config.ContainsKey("encryption")) iniConfig.Network.Encryption = GetBoolValue(config["encryption"]);
+    if (config.ContainsKey("etherType")) appConfig.Network.CustomEtherType = GetStringValue(config["etherType"]);
+    
+    // FTP
+    if (config.ContainsKey("ftpEnabled")) appConfig.Protocols.Ftp.Enabled = GetBoolValue(config["ftpEnabled"]);
+    if (isDeviceA && config.ContainsKey("ftpListenPort")) appConfig.Protocols.Ftp.ListenPort = GetIntValue(config["ftpListenPort"]);
+    if (config.ContainsKey("ftpTargetHost")) appConfig.Protocols.Ftp.TargetHost = GetStringValue(config["ftpTargetHost"]);
+    if (config.ContainsKey("ftpTargetPort")) appConfig.Protocols.Ftp.TargetPort = GetIntValue(config["ftpTargetPort"]);
+    
+    // SFTP
+    if (config.ContainsKey("sftpEnabled")) appConfig.Protocols.Sftp.Enabled = GetBoolValue(config["sftpEnabled"]);
+    if (isDeviceA && config.ContainsKey("sftpListenPort")) appConfig.Protocols.Sftp.ListenPort = GetIntValue(config["sftpListenPort"]);
+    if (config.ContainsKey("sftpTargetHost")) appConfig.Protocols.Sftp.TargetHost = GetStringValue(config["sftpTargetHost"]);
+    if (config.ContainsKey("sftpTargetPort")) appConfig.Protocols.Sftp.TargetPort = GetIntValue(config["sftpTargetPort"]);
+    
+    // PostgreSQL
+    if (config.ContainsKey("postgresqlEnabled")) appConfig.Protocols.Postgresql.Enabled = GetBoolValue(config["postgresqlEnabled"]);
+    if (isDeviceA && config.ContainsKey("postgresqlListenPort")) appConfig.Protocols.Postgresql.ListenPort = GetIntValue(config["postgresqlListenPort"]);
+    if (config.ContainsKey("postgresqlTargetHost")) appConfig.Protocols.Postgresql.TargetHost = GetStringValue(config["postgresqlTargetHost"]);
+    if (config.ContainsKey("postgresqlTargetPort")) appConfig.Protocols.Postgresql.TargetPort = GetIntValue(config["postgresqlTargetPort"]);
+    
+    // Security
+    if (config.ContainsKey("enableVirusScan")) iniConfig.Security.EnableVirusScan = GetBoolValue(config["enableVirusScan"]);
+    if (config.ContainsKey("enableDeepInspection")) appConfig.Security.EnableDeepInspection = GetBoolValue(config["enableDeepInspection"]);
+    if (config.ContainsKey("scanTimeout")) appConfig.Security.ScanTimeout = GetIntValue(config["scanTimeout"]);
+    if (config.ContainsKey("quarantinePath")) iniConfig.Security.QuarantinePath = GetStringValue(config["quarantinePath"]);
+    if (config.ContainsKey("yaraRulesPath")) appConfig.Security.YaraRulesPath = GetStringValue(config["yaraRulesPath"]);
+    
+    // Performance
+    if (config.ContainsKey("receiveBufferSize")) appConfig.Performance.ReceiveBufferSize = GetIntValue(config["receiveBufferSize"]);
+    if (config.ContainsKey("maxConcurrentSessions")) appConfig.Performance.MaxConcurrentSessions = GetIntValue(config["maxConcurrentSessions"]);
+    if (config.ContainsKey("enableZeroCopy")) appConfig.Performance.EnableZeroCopy = GetBoolValue(config["enableZeroCopy"]);
+    if (config.ContainsKey("maxMemoryMB")) iniConfig.Performance.MaxMemoryMB = GetIntValue(config["maxMemoryMB"]);
+    if (config.ContainsKey("bufferSize")) iniConfig.Performance.BufferSize = GetIntValue(config["bufferSize"]);
+    
+    // Redundancy
+    if (config.ContainsKey("heartbeatInterval")) iniConfig.Redundancy.HeartbeatInterval = GetIntValue(config["heartbeatInterval"]);
+    if (config.ContainsKey("failoverTimeout")) iniConfig.Redundancy.FailoverTimeout = GetIntValue(config["failoverTimeout"]);
+    if (config.ContainsKey("dataSyncMode")) iniConfig.Redundancy.DataSyncMode = GetStringValue(config["dataSyncMode"]);
+}
+
+// Helper methods for safe type conversion
+static string GetStringValue(JsonElement element)
+{
+    return element.ValueKind == JsonValueKind.String ? element.GetString() ?? "" : element.ToString();
+}
+
+static int GetIntValue(JsonElement element)
+{
+    if (element.ValueKind == JsonValueKind.Number)
+        return element.GetInt32();
+    if (element.ValueKind == JsonValueKind.String && int.TryParse(element.GetString(), out int result))
+        return result;
+    return 0;
+}
+
+static bool GetBoolValue(JsonElement element)
+{
+    if (element.ValueKind == JsonValueKind.True || element.ValueKind == JsonValueKind.False)
+        return element.GetBoolean();
+    if (element.ValueKind == JsonValueKind.String)
+    {
+        var str = element.GetString()?.ToLower();
+        return str == "true" || str == "1" || str == "yes";
+    }
+    return false;
+}
