@@ -342,6 +342,18 @@ flowchart TD
 
 ## ⚙️ インストール
 
+### システム構成
+
+本システムは**2つの実行ファイル**で構成されます：
+
+1. **NonIPFileDelivery.exe (非IP送受信機A)** - クライアント側
+   - Windows端末Aからの接続を待ち受け
+   - Raw Ethernetで送信
+   
+2. **NonIPFileDeliveryB.exe (非IP送受信機B)** - サーバー側 ⭐NEW!
+   - Raw Ethernetから受信
+   - Windows端末B上のサーバーに接続
+
 ### MSIインストーラー版
 1. [Releases](../../releases)から最新のMSIをダウンロード
 2. 管理者権限でインストーラーを実行
@@ -353,6 +365,29 @@ flowchart TD
 2. 任意のフォルダに展開
 3. 設定ファイル（config.ini）はexeファイルと同じフォルダに生成されます
 4. Windowsファイアウォール例外設定が必要な場合があります
+
+### 非IP送受信機B（サーバー側）のセットアップ
+
+**B側は別マシンで実行する必要があります！**
+
+```bash
+# ビルド
+dotnet build src/NonIPFileDeliveryB/NonIPFileDeliveryB.csproj
+
+# 設定ファイル編集
+# appsettings.b.json を編集して以下を設定：
+# - Network:InterfaceName: 実際のNIC名
+# - Network:RemoteMacAddress: A側のMACアドレス
+# - Protocols:*:TargetHost: 実際のサーバーIP
+
+# 実行（管理者権限必要）
+cd src/NonIPFileDeliveryB/bin/Debug/net8.0
+sudo ./NonIPFileDeliveryB  # Linux
+# または
+NonIPFileDeliveryB.exe  # Windows（管理者として実行）
+```
+
+詳細は [docs/transceiver-b-guide.md](docs/transceiver-b-guide.md) を参照してください。
 
 ## 🔧 設定
 
@@ -678,12 +713,15 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - [x] 外部ライブラリの完全統合（YARA完全実装済み）
 - [x] 冗長化機能の実装（Active-Standby完全実装済み）
 - [x] 負荷分散機能の実装（4つのアルゴリズム実装済み）
+- [x] **非IP送受信機B（サーバー側）の実装 - NEW!**
+  - FtpProxyB, SftpProxyB, PostgreSqlProxyB
+  - セッション管理とマルチプレクシング
+  - 独立した実行ファイル（NonIPFileDeliveryB.exe）
 - [ ] 統合テストの実装
 - [ ] パフォーマンステストの実行と検証
 - [ ] ClamAV統合の完全実装
 - [ ] Web UI設定ツール完全版
 - [ ] 追加セキュリティエンジン統合
-- [ ] 非IP送受信機能のB装置側
 
 ---
 
