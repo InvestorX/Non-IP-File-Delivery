@@ -4,6 +4,8 @@
 
 This directory contains the automated test suite for the Non-IP File Delivery System. The tests are implemented using xUnit, FluentAssertions, and Moq.
 
+For a comprehensive list of all mocked interfaces and their usage, see the [Mock List Documentation](../docs/mock-list.md).
+
 ## Test Structure
 
 ```

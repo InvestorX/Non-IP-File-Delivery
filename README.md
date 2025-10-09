@@ -626,6 +626,7 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - [技術仕様書](docs/technical-specification.md)
 - [API リファレンス](docs/api-reference.md)
 - [設定ガイド](docs/configuration-guide.md)
+- [モック一覧](docs/mock-list.md) - テストで使用されるモックの完全なリスト
 
 ## 🔄 更新履歴
 
