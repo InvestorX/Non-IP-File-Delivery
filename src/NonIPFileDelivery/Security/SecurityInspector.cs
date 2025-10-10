@@ -69,9 +69,24 @@ public class SecurityInspector : IDisposable
 
             return false; // クリーン
         }
+        catch (ArgumentNullException ex)
+        {
+            Log.Error(ex, "Data scan failed: Null argument");
+            return false;
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException ex)
+        {
+            Log.Error(ex, "Data scan timeout: Pattern matching took too long");
+            return false;
+        }
+        catch (OutOfMemoryException ex)
+        {
+            Log.Error(ex, "Out of memory during data scan");
+            throw; // メモリ不足は再スロー
+        }
         catch (Exception ex)
         {
-            Log.Error(ex, "Error during data scan");
+            Log.Error(ex, "Unexpected error during data scan");
             return false;
         }
     }
@@ -94,10 +109,25 @@ public class SecurityInspector : IDisposable
             var data = File.ReadAllBytes(filePath);
             return ScanData(data, Path.GetFileName(filePath));
         }
+        catch (UnauthorizedAccessException ex)
+        {
+            Log.Error(ex, "Access denied when scanning file: {FilePath}", filePath);
+            return true; // アクセス拒否は安全側で脅威扱い
+        }
+        catch (IOException ex)
+        {
+            Log.Error(ex, "I/O error when scanning file: {FilePath}", filePath);
+            return true; // I/Oエラーは安全側
+        }
+        catch (OutOfMemoryException ex)
+        {
+            Log.Error(ex, "Out of memory when reading file: {FilePath}", filePath);
+            throw; // メモリ不足は再スロー
+        }
         catch (Exception ex)
         {
-            Log.Error(ex, "Error scanning file: {FilePath}", filePath);
-            return true; // エラー時は安全側
+            Log.Error(ex, "Unexpected error scanning file: {FilePath}", filePath);
+            return true; // 予期しないエラーは安全側
         }
     }
 

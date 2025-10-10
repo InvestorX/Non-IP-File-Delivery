@@ -62,7 +62,19 @@ public class SftpProxyB : IDisposable
             return;
         }
 
-        _ = Task.Run(async () => await HandleSftpFrameAsync(frame));
+        // Fire-and-Forgetパターン: 例外を適切にログ記録
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await HandleSftpFrameAsync(frame);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error handling SFTP frame: Protocol={Protocol}, SessionId={SessionId}", 
+                    frame.Protocol, frame.SessionId);
+            }
+        });
     }
 
     private async Task HandleSftpFrameAsync(SecureFrame frame)
@@ -99,7 +111,17 @@ public class SftpProxyB : IDisposable
                 Log.Information("New SFTP connection established: SessionId={SessionId}, Server={Host}:{Port}",
                     sessionId, _targetSftpHost, _targetSftpPort);
 
-                _ = Task.Run(async () => await MonitorSftpServerResponseAsync(sessionId, client));
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await MonitorSftpServerResponseAsync(sessionId, client);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Error monitoring SFTP server response: SessionId={SessionId}", sessionId);
+                    }
+                });
             }
 
             // SFTPサーバにデータを転送

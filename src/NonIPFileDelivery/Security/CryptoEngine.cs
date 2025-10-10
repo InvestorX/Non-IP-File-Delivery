@@ -96,9 +96,24 @@ public class CryptoEngine : IDisposable
 
             return result;
         }
+        catch (ArgumentNullException ex)
+        {
+            Log.Error(ex, "Encryption failed: Null argument");
+            throw new CryptographicException("Encryption failed: Invalid null input", ex);
+        }
+        catch (CryptographicException ex)
+        {
+            Log.Error(ex, "Cryptographic operation failed during encryption");
+            throw;
+        }
+        catch (OutOfMemoryException ex)
+        {
+            Log.Error(ex, "Out of memory during encryption");
+            throw new CryptographicException("Encryption failed: Insufficient memory", ex);
+        }
         catch (Exception ex)
         {
-            Log.Error(ex, "Encryption failed");
+            Log.Error(ex, "Unexpected error during encryption");
             throw new CryptographicException("Encryption operation failed", ex);
         }
     }
@@ -141,8 +156,18 @@ public class CryptoEngine : IDisposable
         }
         catch (CryptographicException ex)
         {
-            Log.Error(ex, "Decryption failed - possible tampering detected");
-            throw new CryptographicException("Decryption or authentication failed", ex);
+            Log.Error(ex, "Decryption failed - authentication tag validation failed (possible tampering)");
+            throw;
+        }
+        catch (ArgumentException ex)
+        {
+            Log.Error(ex, "Decryption failed: Invalid argument (nonce/ciphertext/tag size)");
+            throw new CryptographicException("Decryption failed: Invalid encrypted data format", ex);
+        }
+        catch (OutOfMemoryException ex)
+        {
+            Log.Error(ex, "Out of memory during decryption");
+            throw new CryptographicException("Decryption failed: Insufficient memory", ex);
         }
         catch (Exception ex)
         {

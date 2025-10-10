@@ -351,12 +351,27 @@ public class SecureEthernetTransceiver : IDisposable
         {
             _device.StopCapture();
             _device.Close();
+            _isRunning = false;
         }
 
         // バックグラウンドタスクを停止
-        _backgroundTasksCts.Cancel();
-        _qosProcessingTask?.Wait(TimeSpan.FromSeconds(5));
-        _backgroundTasksCts.Dispose();
+        try
+        {
+            _backgroundTasksCts?.Cancel();
+            _qosProcessingTask?.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (OperationCanceledException)
+        {
+            // 正常なキャンセル
+        }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is OperationCanceledException))
+        {
+            // 正常なキャンセル
+        }
+        finally
+        {
+            _backgroundTasksCts?.Dispose();
+        }
 
         _receiveChannel.Writer.Complete();
         _qosQueue?.Dispose();
