@@ -126,13 +126,13 @@ namespace NonIPFileDelivery.Services
         /// <summary>
         /// Simple Query解析（'Q'メッセージ）
         /// </summary>
-        private async Task ParseSimpleQuery(byte[] payload, PostgreSQLAnalysisResult result)
+        private Task ParseSimpleQuery(byte[] payload, PostgreSQLAnalysisResult result)
         {
             // 'Q' + length(4) + SQL文（NULL終端）
             if (payload.Length < 6)
             {
                 result.ErrorMessage = "Query too short";
-                return;
+                return Task.CompletedTask;
             }
 
             // SQL文を抽出（5バイト目から、NULL終端まで）
@@ -155,6 +155,8 @@ namespace NonIPFileDelivery.Services
                 _logger.Warning($"SQL Injection detected: Pattern={injectionResult.DetectedPattern}, " +
                                $"ThreatLevel={injectionResult.ThreatLevel}");
             }
+
+            return Task.CompletedTask;
         }
 
         /// <summary>

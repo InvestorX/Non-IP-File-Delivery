@@ -27,9 +27,9 @@ public class FtpProxyB : IDisposable
     // データチャンネル管理
     private readonly ConcurrentDictionary<string, FtpDataChannelB> _dataChannels = new();
 
-    // プロトコル識別子（A側と同じ）
-    private const byte PROTOCOL_FTP_CONTROL = 0x10;
-    private const byte PROTOCOL_FTP_DATA = 0x11;
+    // プロトコル識別子（A側と統一）
+    private const byte PROTOCOL_FTP_CONTROL = 0x01;
+    private const byte PROTOCOL_FTP_DATA = 0x02;
 
     /// <summary>
     /// FtpProxyBを初期化
@@ -146,6 +146,18 @@ public class FtpProxyB : IDisposable
             {
                 await HandlePortCommandAsync(sessionId, command);
                 return;
+            }
+            else if (commandUpper.StartsWith("PASV"))
+            {
+                // PASVコマンドの場合、データチャンネルを事前に準備
+                // 実際の227応答は後で受信する
+                if (!_dataChannels.ContainsKey(sessionId))
+                {
+                    var dataChannel = new FtpDataChannelB(sessionId, _targetFtpHost, _targetFtpPort,
+                        _transceiver, _inspector, _cts.Token);
+                    _dataChannels[sessionId] = dataChannel;
+                    Log.Debug("Data channel prepared for PASV mode: SessionId={SessionId}", sessionId);
+                }
             }
 
             // セッションに対応するTCP接続を取得（なければ作成）
@@ -280,6 +292,15 @@ public class FtpProxyB : IDisposable
                 Log.Debug("FTP response from server: SessionId={SessionId}, Response={Response}",
                     sessionId, response);
 
+                // 227応答(Entering Passive Mode)を検出してデータチャンネルに情報を伝達
+                if (response.StartsWith("227 ") && _dataChannels.TryGetValue(sessionId, out var dataChannel))
+                {
+                    if (dataChannel.ParsePasvResponse(response))
+                    {
+                        Log.Information("PASV mode activated for session: SessionId={SessionId}", sessionId);
+                    }
+                }
+
                 // ダウンロード方向のセキュリティ検閲
                 if (_inspector.ScanData(responseData, $"FTP-DOWNLOAD-{sessionId}"))
                 {
@@ -375,7 +396,11 @@ internal class FtpDataChannelB : IDisposable
 
     private TcpClient? _dataConnection;
     private NetworkStream? _dataStream;
-    private const byte PROTOCOL_FTP_DATA = 0x11;
+    private const byte PROTOCOL_FTP_DATA = 0x02;
+    
+    // PASV応答から取得した動的ポート情報
+    private string? _pasvHost;
+    private int? _pasvPort;
 
     public FtpDataChannelB(
         string sessionId,
@@ -393,6 +418,55 @@ internal class FtpDataChannelB : IDisposable
         _cancellationToken = cancellationToken;
 
         Log.Debug("FtpDataChannelB created: SessionId={SessionId}", sessionId);
+    }
+    
+    /// <summary>
+    /// 227応答(Entering Passive Mode)をパースしてホストとポートを取得
+    /// 形式: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
+    /// </summary>
+    public bool ParsePasvResponse(string response)
+    {
+        try
+        {
+            // 227応答の括弧内の数値を抽出
+            var startIndex = response.IndexOf('(');
+            var endIndex = response.IndexOf(')');
+            if (startIndex == -1 || endIndex == -1 || endIndex <= startIndex)
+            {
+                Log.Warning("Invalid PASV response format: {Response}", response);
+                return false;
+            }
+
+            var numbers = response.Substring(startIndex + 1, endIndex - startIndex - 1)
+                .Split(',')
+                .Select(s => s.Trim())
+                .ToArray();
+
+            if (numbers.Length != 6)
+            {
+                Log.Warning("PASV response does not contain 6 numbers: {Response}", response);
+                return false;
+            }
+
+            // h1.h2.h3.h4形式のホスト名を構築
+            _pasvHost = $"{numbers[0]}.{numbers[1]}.{numbers[2]}.{numbers[3]}";
+            
+            // p1 * 256 + p2でポート番号を計算
+            if (int.TryParse(numbers[4], out var p1) && int.TryParse(numbers[5], out var p2))
+            {
+                _pasvPort = (p1 * 256) + p2;
+                Log.Information("Parsed PASV response: Host={Host}, Port={Port}", _pasvHost, _pasvPort);
+                return true;
+            }
+
+            Log.Warning("Failed to parse port numbers from PASV response: {Response}", response);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error parsing PASV response: {Response}", response);
+            return false;
+        }
     }
 
     /// <summary>
@@ -429,27 +503,39 @@ internal class FtpDataChannelB : IDisposable
 
     /// <summary>
     /// FTPサーバへのデータチャンネル接続を確立
+    /// PASV応答から取得したホストとポート情報を使用
     /// </summary>
     private async Task EstablishDataConnectionAsync()
     {
         try
         {
-            // 注: 実際のFTP実装では、サーバーが227応答（Entering Passive Mode）で
-            // 返すIP/ポート情報を解析して接続する必要がある
-            // この実装では簡略化のため、制御チャンネルと同じホストに接続
+            // PASV応答から取得した情報を使用
+            string targetHost;
+            int targetPort;
+
+            if (_pasvHost != null && _pasvPort.HasValue)
+            {
+                // PASV応答で指定されたホストとポートを使用
+                targetHost = _pasvHost;
+                targetPort = _pasvPort.Value;
+                Log.Debug("Using PASV-provided host and port: Host={Host}, Port={Port}", targetHost, targetPort);
+            }
+            else
+            {
+                // PASV応答がない場合はフォールバック（アクティブモード）
+                // FTPサーバのデータポート（通常20番）に接続を試みる
+                targetHost = _targetFtpHost;
+                targetPort = 20; // FTPデータポート（アクティブモード）
+                Log.Warning("PASV response not available, falling back to active mode: Host={Host}, Port={Port}",
+                    targetHost, targetPort);
+            }
             
             _dataConnection = new TcpClient();
-            
-            // FTPデータポートは通常20番（アクティブモード）または
-            // サーバーが指定した動的ポート（パッシブモード）
-            // ここでは簡略化して動的ポート範囲の1024を試す
-            var dataPort = 1024; // 実際はPASV応答から取得すべき
-            
-            await _dataConnection.ConnectAsync(_targetFtpHost, dataPort, _cancellationToken);
+            await _dataConnection.ConnectAsync(targetHost, targetPort, _cancellationToken);
             _dataStream = _dataConnection.GetStream();
 
             Log.Information("Data channel established to FTP server: SessionId={SessionId}, Host={Host}, Port={Port}",
-                _sessionId, _targetFtpHost, dataPort);
+                _sessionId, targetHost, targetPort);
 
             // FTPサーバからのデータを受信してRaw Ethernetで転送（DOWNLOADの場合）
             _ = Task.Run(async () =>

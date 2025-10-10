@@ -5,10 +5,9 @@
 [![License: Sushi-Ware](https://img.shields.io/badge/license-Sushi--Ware-orange.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-8.0-blue.svg)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows/)
-[![Build Status](https://img.shields.io/badge/build-passing%20(0%20errors%2C%2032%20warnings)-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
-[![Status](https://img.shields.io/badge/status-beta-orange.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
-[![Tests](https://img.shields.io/badge/tests-120%2F130%20passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
-[![Code Quality](https://img.shields.io/badge/code%20quality-production%20ready-blue.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
+[![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
+[![Tests](https://img.shields.io/badge/tests-103%2F112%20passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
 
 ## 📋 概要
 
@@ -339,6 +338,25 @@ flowchart TD
 ### 対応プロトコル変換
 - **FTP/SFTP**: 全コマンド対応（ASCII/Binary、パッシブ/アクティブモード）
 - **PostgreSQL**: 全SQL文対応（SELECT, INSERT, UPDATE, DELETE等）、SQLクエリレベル変換
+
+### プロトコル識別子仕様
+非IP送受信機AとB間の通信で使用されるプロトコル識別子は以下の通り統一されています:
+
+| プロトコル | 識別子 | 用途 |
+|-----------|--------|------|
+| **FTP** | 0x01 | FTP制御コマンド |
+| **FTP** | 0x02 | FTPデータ転送 |
+| **PostgreSQL** | 0x10 | 接続開始 |
+| **PostgreSQL** | 0x11 | SQLクエリ |
+| **PostgreSQL** | 0x12 | データ転送 |
+| **PostgreSQL** | 0x13 | レスポンス |
+| **SFTP** | 0x20 | SSHハンドシェイク |
+| **SFTP** | 0x21 | チャネル確立 |
+| **SFTP** | 0x22 | データ転送 |
+
+**ペイロード構造**: `[1バイト プロトコルID][8バイト セッションID][可変長データ]`
+- セッションID: 8文字固定長ASCII文字列（GUIDから生成、8文字未満の場合はスペースパディング）
+- データ: プロトコル固有のペイロード
 
 ## 📦 システム要件
 
@@ -924,7 +942,7 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - ✅ **クロスプラットフォームビルド**: EnableWindowsTargeting=true（Linux環境でもビルド可能）
 
 ##### ビルド・テスト環境
-- ✅ **ソリューション全体ビルド成功**: 8プロジェクト、0エラー、1警告
+- ✅ **ソリューション全体ビルド成功**: 8プロジェクト、0エラー、0警告
   1. NonIPFileDelivery（メインプロジェクト）
   2. NonIPFileDeliveryB（B側アプリケーション）
   3. NonIPConfigTool（WPF設定ツール）
@@ -933,8 +951,8 @@ As long as you retain this notice you can do whatever you want with this stuff. 
   6. NonIPLoadTest（負荷テスト）
   7. NonIPFileDelivery.Tests（ユニットテスト）
   8. NonIPFileDelivery.IntegrationTests（統合テスト）
-- ✅ **ユニットテストプロジェクト**: xUnit、112テスト実装済み
-  - 103テスト合格（セキュリティエンジン60テスト、統合テスト9テスト含む）
+- ✅ **ユニットテストプロジェクト**: xUnit、125テスト実装済み
+  - 116テスト合格（セキュリティエンジン60テスト、統合テスト9テスト含む）
   - 9テスト失敗（ネイティブYARAライブラリ要）
 - ✅ **統合テストプロジェクト**: 5つのテストケース作成（156行、未実行）
 - ✅ **RetryPolicy/QoS統合テスト**: 9テスト実装・合格
@@ -1029,33 +1047,6 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - ❌ **脅威インテリジェンスフィード**: 外部脅威情報の自動取得
 
 #### 🔧 最近の実装完了項目
-
-##### 2025年10月 - 重大なバグ修正とコード品質向上（コミット 350f240）
-- ✅ **デッドロック問題修正**
-  - MainViewModel.Exit(): `.Wait()`を使用したUIスレッドブロッキング → `async Task ExitAsync()`に変更
-  - 影響: WPF設定ツールのシャットダウン時のフリーズ解消
-- ✅ **暗号化キー管理の統一**
-  - A側: 環境変数/ファイルから鍵をロード（警告付き）
-  - B側: 環境変数/ファイルから鍵をロード（必須、6種類の終了コード）
-  - ランダム鍵生成を廃止（通信互換性問題の解決）
-- ✅ **Fire-and-forget例外ハンドリング強化**
-  - FtpProxyB.cs: 4箇所の`Task.Run()`にtry-catch追加
-  - SftpProxyB.cs: 2箇所の`Task.Run()`にtry-catch追加
-  - PostgreSqlProxyB.cs: 2箇所の`Task.Run()`にtry-catch追加
-  - 影響: サイレントエラーの完全排除、詳細ログ記録
-- ✅ **例外処理の粒度向上**（7ファイル改善）
-  - CryptoEngine.cs: ArgumentNullException, CryptographicException, OutOfMemoryException
-  - SecurityInspector.cs: ArgumentNullException, RegexMatchTimeoutException, UnauthorizedAccessException, IOException
-  - ProtocolAnalyzer.cs: ArgumentException, IndexOutOfRangeException
-  - FTPAnalyzer.cs: DecoderFallbackException, ArgumentException
-  - AuthService.cs: ArgumentException, InvalidOperationException, IOException（日本語エラーメッセージ）
-  - 影響: エラー診断の大幅改善、運用時のトラブルシューティング容易化
-- ✅ **リソースリーク修正**
-  - SecureEthernetTransceiver.Dispose(): try-catch-finallyでCancellationTokenSourceを適切に破棄
-  - _isRunningフラグの適切な管理
-  - 影響: 長期運用時のメモリリーク防止
-- ✅ **ビルド検証**: 全8プロジェクト、0エラー、32警告（非致命的）
-- ✅ **テスト結果**: 120/130テスト合格（92%成功率）
 
 ##### 2025年10月10日 16:00 - FTPデータチャネル・GUI設定ツール強化完了
 - ✅ **FTPデータチャネル完全実装**

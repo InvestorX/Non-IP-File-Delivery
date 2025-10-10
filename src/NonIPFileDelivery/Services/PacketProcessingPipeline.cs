@@ -70,7 +70,7 @@ namespace NonIPFileDelivery.Services
 
             // ステージ1: パケットキャプチャ・デシリアライズ
             _captureBlock = new TransformBlock<byte[], ProcessedPacket>(
-                async rawData =>
+                rawData =>
                 {
                     try
                     {
@@ -104,7 +104,7 @@ namespace NonIPFileDelivery.Services
 
             // ステージ2: プロトコル解析（Phase 2で追加）
             _protocolAnalysisBlock = new TransformBlock<ProcessedPacket, ProcessedPacket>(
-                async packet =>
+                packet =>
                 {
                     if (!packet.IsValid)
                         return packet;
@@ -214,7 +214,7 @@ namespace NonIPFileDelivery.Services
 
             // ステージ4: 転送処理
             _forwardBlock = new ActionBlock<ProcessedPacket>(
-                async packet =>
+                packet =>
                 {
                     if (!packet.IsValid || packet.IsBlocked)
                     {

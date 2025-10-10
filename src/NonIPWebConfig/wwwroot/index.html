@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Non-IP File Delivery Web Configuration</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ Non-IP File Delivery Web Configuration</h1>
+        <p class="subtitle">ハッカー・クラッカー・ランサムウェア対策のためのRaw Ethernet非IPファイル転送システム</p>
+        
+        <div id="status"></div>
+        
+        <!-- Device Selection -->
+        <div class="device-selector">
+            <label>
+                <input type="radio" name="device" value="A" checked onchange="switchDevice()">
+                <span>📡 非IP送受信機A (クライアント側)</span>
+            </label>
+            <label>
+                <input type="radio" name="device" value="B" onchange="switchDevice()">
+                <span>📡 非IP送受信機B (サーバー側)</span>
+            </label>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-button active" onclick="showTab('general')">一般設定</button>
+            <button class="tab-button" onclick="showTab('network')">ネットワーク</button>
+            <button class="tab-button" onclick="showTab('protocols')">プロトコル</button>
+            <button class="tab-button" onclick="showTab('security')">セキュリティ</button>
+            <button class="tab-button" onclick="showTab('performance')">パフォーマンス</button>
+            <button class="tab-button" onclick="showTab('status')">ステータス</button>
+        </div>
+        
+        <form id="configForm">
+            <!-- General Settings Tab -->
+            <div id="tab-general" class="tab-content active">
+                <div class="config-section">
+                    <h3>🔧 一般設定</h3>
+                    <div class="form-group">
+                        <label for="mode">動作モード:</label>
+                        <select id="mode" name="mode">
+                            <option value="ActiveStandby">アクティブ-スタンバイ</option>
+                            <option value="LoadBalancing">ロードバランシング</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="logLevel">ログレベル:</label>
+                        <select id="logLevel" name="logLevel">
+                            <option value="Debug">Debug</option>
+                            <option value="Info">Info</option>
+                            <option value="Warning" selected>Warning</option>
+                            <option value="Error">Error</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Network Settings Tab -->
+            <div id="tab-network" class="tab-content">
+                <div class="config-section">
+                    <h3>🌐 ネットワーク設定</h3>
+                    <div class="form-group">
+                        <label for="interfaceName">ネットワークインターフェース:</label>
+                        <select id="interfaceName" name="interfaceName">
+                            <option value="">読み込み中...</option>
+                        </select>
+                        <button type="button" onclick="refreshInterfaces()">🔄 更新</button>
+                    </div>
+                    <div class="form-group">
+                        <label for="localMac">ローカルMACアドレス:</label>
+                        <input type="text" id="localMac" name="localMac" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="remoteMacAddress">リモートMACアドレス:</label>
+                        <input type="text" id="remoteMacAddress" name="remoteMacAddress" placeholder="00:11:22:33:44:55">
+                    </div>
+                    <div class="form-group">
+                        <label for="frameSize">フレームサイズ (bytes):</label>
+                        <input type="number" id="frameSize" name="frameSize" value="9000" min="1500" max="9000">
+                    </div>
+                    <div class="form-group">
+                        <label for="encryption">暗号化:</label>
+                        <select id="encryption" name="encryption">
+                            <option value="true" selected>有効</option>
+                            <option value="false">無効</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="etherType">カスタムEtherType:</label>
+                        <input type="text" id="etherType" name="etherType" value="0x88B5">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Protocol Settings Tab -->
+            <div id="tab-protocols" class="tab-content">
+                <div class="config-section">
+                    <h3>📂 FTP設定</h3>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="ftpEnabled" name="ftpEnabled" checked>
+                            FTP有効化
+                        </label>
+                    </div>
+                    <div class="form-group device-a-only">
+                        <label for="ftpListenPort">リッスンポート:</label>
+                        <input type="number" id="ftpListenPort" name="ftpListenPort" value="21">
+                    </div>
+                    <div class="form-group">
+                        <label for="ftpTargetHost">ターゲットホスト:</label>
+                        <input type="text" id="ftpTargetHost" name="ftpTargetHost" value="192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label for="ftpTargetPort">ターゲットポート:</label>
+                        <input type="number" id="ftpTargetPort" name="ftpTargetPort" value="21">
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>🔒 SFTP設定</h3>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="sftpEnabled" name="sftpEnabled" checked>
+                            SFTP有効化
+                        </label>
+                    </div>
+                    <div class="form-group device-a-only">
+                        <label for="sftpListenPort">リッスンポート:</label>
+                        <input type="number" id="sftpListenPort" name="sftpListenPort" value="22">
+                    </div>
+                    <div class="form-group">
+                        <label for="sftpTargetHost">ターゲットホスト:</label>
+                        <input type="text" id="sftpTargetHost" name="sftpTargetHost" value="192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label for="sftpTargetPort">ターゲットポート:</label>
+                        <input type="number" id="sftpTargetPort" name="sftpTargetPort" value="22">
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>🐘 PostgreSQL設定</h3>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="postgresqlEnabled" name="postgresqlEnabled" checked>
+                            PostgreSQL有効化
+                        </label>
+                    </div>
+                    <div class="form-group device-a-only">
+                        <label for="postgresqlListenPort">リッスンポート:</label>
+                        <input type="number" id="postgresqlListenPort" name="postgresqlListenPort" value="5432">
+                    </div>
+                    <div class="form-group">
+                        <label for="postgresqlTargetHost">ターゲットホスト:</label>
+                        <input type="text" id="postgresqlTargetHost" name="postgresqlTargetHost" value="192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label for="postgresqlTargetPort">ターゲットポート:</label>
+                        <input type="number" id="postgresqlTargetPort" name="postgresqlTargetPort" value="5432">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Security Settings Tab -->
+            <div id="tab-security" class="tab-content">
+                <div class="config-section">
+                    <h3>🔐 セキュリティ設定</h3>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="enableVirusScan" name="enableVirusScan" checked>
+                            ウイルススキャン有効
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="enableDeepInspection" name="enableDeepInspection" checked>
+                            詳細検査有効
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="scanTimeout">スキャンタイムアウト (ms):</label>
+                        <input type="number" id="scanTimeout" name="scanTimeout" value="5000">
+                    </div>
+                    <div class="form-group">
+                        <label for="quarantinePath">隔離パス:</label>
+                        <input type="text" id="quarantinePath" name="quarantinePath" value="C:\NonIP\Quarantine">
+                    </div>
+                    <div class="form-group">
+                        <label for="yaraRulesPath">YARAルールパス:</label>
+                        <input type="text" id="yaraRulesPath" name="yaraRulesPath" value="rules/*.yar">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Settings Tab -->
+            <div id="tab-performance" class="tab-content">
+                <div class="config-section">
+                    <h3>⚡ パフォーマンス設定</h3>
+                    <div class="form-group">
+                        <label for="receiveBufferSize">受信バッファサイズ:</label>
+                        <input type="number" id="receiveBufferSize" name="receiveBufferSize" value="10000">
+                    </div>
+                    <div class="form-group">
+                        <label for="maxConcurrentSessions">最大同時セッション数:</label>
+                        <input type="number" id="maxConcurrentSessions" name="maxConcurrentSessions" value="100">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="enableZeroCopy" name="enableZeroCopy" checked>
+                            ゼロコピー有効
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="maxMemoryMB">最大メモリ使用量 (MB):</label>
+                        <input type="number" id="maxMemoryMB" name="maxMemoryMB" value="8192">
+                    </div>
+                    <div class="form-group">
+                        <label for="bufferSize">バッファサイズ (bytes):</label>
+                        <input type="number" id="bufferSize" name="bufferSize" value="65536">
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>🔄 冗長化設定</h3>
+                    <div class="form-group">
+                        <label for="heartbeatInterval">ハートビート間隔 (ms):</label>
+                        <input type="number" id="heartbeatInterval" name="heartbeatInterval" value="1000">
+                    </div>
+                    <div class="form-group">
+                        <label for="failoverTimeout">フェイルオーバータイムアウト (ms):</label>
+                        <input type="number" id="failoverTimeout" name="failoverTimeout" value="5000">
+                    </div>
+                    <div class="form-group">
+                        <label for="dataSyncMode">データ同期モード:</label>
+                        <select id="dataSyncMode" name="dataSyncMode">
+                            <option value="realtime" selected>リアルタイム</option>
+                            <option value="batch">バッチ</option>
+                            <option value="async">非同期</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Tab -->
+            <div id="tab-status" class="tab-content">
+                <div class="config-section">
+                    <h3>📊 システムステータス</h3>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <div class="status-label">ステータス:</div>
+                            <div class="status-value" id="systemStatus">-</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">稼働時間:</div>
+                            <div class="status-value" id="uptime">-</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">スループット:</div>
+                            <div class="status-value" id="throughput">-</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">接続数:</div>
+                            <div class="status-value" id="connections">-</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">メモリ使用量:</div>
+                            <div class="status-value" id="memoryUsage">-</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">バージョン:</div>
+                            <div class="status-value" id="version">-</div>
+                        </div>
+                    </div>
+                    <button type="button" onclick="refreshStatus()">🔄 ステータス更新</button>
+                </div>
+            </div>
+            
+            <div class="button-group">
+                <button type="submit">💾 設定を保存</button>
+                <button type="button" onclick="loadConfig()">📁 設定を読み込み</button>
+                <button type="button" onclick="resetConfig()">🔄 デフォルトに戻す</button>
+            </div>
+        </form>
+    </div>
+    
+    <script src="/js/app.js"></script>
+</body>
+</html>

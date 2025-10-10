@@ -22,9 +22,11 @@ public class PostgreSqlProxyB : IDisposable
     private readonly CancellationTokenSource _cts;
     private bool _isRunning;
 
-    private const byte PROTOCOL_PG_STARTUP = 0x30;
-    private const byte PROTOCOL_PG_QUERY = 0x31;
-    private const byte PROTOCOL_PG_DATA = 0x32;
+    // プロトコル識別子（A側と統一）
+    private const byte PROTOCOL_PG_STARTUP = 0x10;
+    private const byte PROTOCOL_PG_QUERY = 0x11;
+    private const byte PROTOCOL_PG_DATA = 0x12;
+    private const byte PROTOCOL_PG_RESPONSE = 0x13;
 
     public PostgreSqlProxyB(
         SecureEthernetTransceiver transceiver,
