@@ -24,7 +24,7 @@ public class FtpIntegrationTests : IDisposable
     }
 
     [Fact(Skip = "統合テストは実際のネットワーク環境が必要")]
-    public async Task FtpCommandFlow_ShouldForwardSuccessfully()
+    public Task FtpCommandFlow_ShouldForwardSuccessfully()
     {
         // Arrange
         var cryptoKey = new byte[32];
@@ -38,6 +38,8 @@ public class FtpIntegrationTests : IDisposable
 
         // Act & Assert
         Assert.True(true, "統合テストのフレームワークが設定されています");
+        
+        return Task.CompletedTask;
     }
 
     [Fact]

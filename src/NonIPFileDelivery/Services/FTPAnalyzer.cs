@@ -62,7 +62,7 @@ namespace NonIPFileDelivery.Services
         /// <summary>
         /// FTP解析（詳細版）
         /// </summary>
-        public async Task<FTPAnalysisResult> AnalyzeFTPAsync(byte[] data)
+        public Task<FTPAnalysisResult> AnalyzeFTPAsync(byte[] data)
         {
             var result = new FTPAnalysisResult
             {
@@ -77,7 +77,7 @@ namespace NonIPFileDelivery.Services
                 if (ftpPayload == null || ftpPayload.Length == 0)
                 {
                     result.ErrorMessage = "No FTP payload found";
-                    return result;
+                    return Task.FromResult(result);
                 }
 
                 // ASCII文字列として解釈
@@ -95,13 +95,13 @@ namespace NonIPFileDelivery.Services
                 }
 
                 result.IsValid = true;
-                return result;
+                return Task.FromResult(result);
             }
             catch (Exception ex)
             {
                 _logger.Error($"FTP analysis error: {ex.Message}", ex);
                 result.ErrorMessage = ex.Message;
-                return result;
+                return Task.FromResult(result);
             }
         }
 

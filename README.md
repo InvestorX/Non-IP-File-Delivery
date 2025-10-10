@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows/)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
 [![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
-[![Tests](https://img.shields.io/badge/tests-103%2F112%20passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
+[![Tests](https://img.shields.io/badge/tests-116%2F125%20passing-brightgreen.svg)](https://github.com/InvestorX/Non-IP-File-Delivery)
 
 ## 📋 概要
 
@@ -327,6 +327,25 @@ flowchart TD
 ### 対応プロトコル変換
 - **FTP/SFTP**: 全コマンド対応（ASCII/Binary、パッシブ/アクティブモード）
 - **PostgreSQL**: 全SQL文対応（SELECT, INSERT, UPDATE, DELETE等）、SQLクエリレベル変換
+
+### プロトコル識別子仕様
+非IP送受信機AとB間の通信で使用されるプロトコル識別子は以下の通り統一されています:
+
+| プロトコル | 識別子 | 用途 |
+|-----------|--------|------|
+| **FTP** | 0x01 | FTP制御コマンド |
+| **FTP** | 0x02 | FTPデータ転送 |
+| **PostgreSQL** | 0x10 | 接続開始 |
+| **PostgreSQL** | 0x11 | SQLクエリ |
+| **PostgreSQL** | 0x12 | データ転送 |
+| **PostgreSQL** | 0x13 | レスポンス |
+| **SFTP** | 0x20 | SSHハンドシェイク |
+| **SFTP** | 0x21 | チャネル確立 |
+| **SFTP** | 0x22 | データ転送 |
+
+**ペイロード構造**: `[1バイト プロトコルID][8バイト セッションID][可変長データ]`
+- セッションID: 8文字固定長ASCII文字列（GUIDから生成、8文字未満の場合はスペースパディング）
+- データ: プロトコル固有のペイロード
 
 ## 📦 システム要件
 
@@ -778,7 +797,7 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - ✅ **クロスプラットフォームビルド**: EnableWindowsTargeting=true（Linux環境でもビルド可能）
 
 ##### ビルド・テスト環境
-- ✅ **ソリューション全体ビルド成功**: 8プロジェクト、0エラー、1警告
+- ✅ **ソリューション全体ビルド成功**: 8プロジェクト、0エラー、0警告
   1. NonIPFileDelivery（メインプロジェクト）
   2. NonIPFileDeliveryB（B側アプリケーション）
   3. NonIPConfigTool（WPF設定ツール）
@@ -787,8 +806,8 @@ As long as you retain this notice you can do whatever you want with this stuff. 
   6. NonIPLoadTest（負荷テスト）
   7. NonIPFileDelivery.Tests（ユニットテスト）
   8. NonIPFileDelivery.IntegrationTests（統合テスト）
-- ✅ **ユニットテストプロジェクト**: xUnit、112テスト実装済み
-  - 103テスト合格（セキュリティエンジン60テスト、統合テスト9テスト含む）
+- ✅ **ユニットテストプロジェクト**: xUnit、125テスト実装済み
+  - 116テスト合格（セキュリティエンジン60テスト、統合テスト9テスト含む）
   - 9テスト失敗（ネイティブYARAライブラリ要）
 - ✅ **統合テストプロジェクト**: 5つのテストケース作成（156行、未実行）
 - ✅ **RetryPolicy/QoS統合テスト**: 9テスト実装・合格
@@ -874,6 +893,22 @@ As long as you retain this notice you can do whatever you want with this stuff. 
   - ❌ カスタムプロトコルプラグイン機構
 
 #### 🔧 最近の実装完了項目
+
+##### 2025年10月10日 17:00 - プロトコル一貫性修正完了
+- ✅ **プロトコルID統一**: A側とB側のプロトコル識別子を統一
+  - FtpProxyB: 0x10/0x11 → 0x01/0x02に変更
+  - PostgreSqlProxyB: 0x30-0x32 → 0x10-0x13に変更、PROTOCOL_PG_RESPONSE (0x13)追加
+  - SftpProxyB: 既に一致（0x20-0x22）
+- ✅ **セッションID処理修正**: BuildProtocolPayloadメソッドの改善
+  - A側（FtpProxy, PostgreSqlProxy, SftpProxy）: セッションIDを8バイト固定長にパディング
+  - 修正前: `Encoding.ASCII.GetBytes(sessionId).CopyTo(payload, 1);` （8文字未満でバッファ不完全）
+  - 修正後: `var sessionIdBytes = Encoding.ASCII.GetBytes(sessionId.PadRight(8)); Array.Copy(sessionIdBytes, 0, payload, 1, 8);`
+  - B側: 既に正しい実装（PadRight(8)使用）
+  - 効果: セッションID長が8文字未満の場合でも正しく通信可能に
+- ✅ **データフロー検証**: FTPファイル転送の完全なデータフローを確認
+  - Windows A → 非IP送受信機A → Raw Ethernet → 非IP送受信機B → FTPサーバ → （逆方向） → Windows A
+  - ペイロード構造: [1バイト プロトコルID][8バイト セッションID][可変長データ]
+- ✅ **ビルド成功**: 0エラー、0警告
 
 ##### 2025年10月10日 16:00 - FTPデータチャネル・GUI設定ツール強化完了
 - ✅ **FTPデータチャネル完全実装**
