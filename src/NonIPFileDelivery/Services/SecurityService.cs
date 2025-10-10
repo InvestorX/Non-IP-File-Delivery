@@ -12,8 +12,10 @@ namespace NonIPFileDelivery.Services
     {
         private readonly ILoggingService _logger;
         private SecurityConfig _config;
-        private YARAScanner? _yaraScanner;      // 🆕 追加
-        private ClamAVScanner? _clamAvScanner;  // 🆕 追加
+        private YARAScanner? _yaraScanner;              // YARA rule-based scanner
+        private ClamAVScanner? _clamAvScanner;          // ClamAV anti-virus scanner
+        private CustomSignatureScanner? _customScanner; // Custom signature scanner
+        private WindowsDefenderScanner? _defenderScanner; // 🆕 Windows Defender scanner
 
         /// <summary>
         /// セキュリティ機能が有効かどうか
@@ -79,6 +81,22 @@ namespace NonIPFileDelivery.Services
                         _logger.Warning("ClamAV connection failed (continuing without ClamAV)");
                         _clamAvScanner = null;
                     }
+
+                    // 🆕 カスタム署名スキャナー初期化
+                    var signaturesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "signatures.json");
+                    _customScanner = new CustomSignatureScanner(_logger, signaturesPath);
+                    _logger.Info($"Custom signature scanner initialized with {_customScanner.LoadedSignatureCount} signatures");
+
+                    // 🆕 Windows Defenderスキャナー初期化（Windowsのみ）
+                    _defenderScanner = new WindowsDefenderScanner(_logger);
+                    if (_defenderScanner.DefenderAvailable)
+                    {
+                        _logger.Info("Windows Defender scanner initialized");
+                    }
+                    else
+                    {
+                        _logger.Info($"Windows Defender not available (OS: {(_defenderScanner.IsWindows ? "Windows" : "Non-Windows")})");
+                    }
                 }
 
                 _logger.Info("Security services initialized successfully");
@@ -142,11 +160,43 @@ namespace NonIPFileDelivery.Services
                     }
                 }
 
+                // 🆕 カスタム署名スキャン実行
+                if (_customScanner != null)
+                {
+                    var customResult = await _customScanner.ScanAsync(data, fileName, _config.ScanTimeout);
+                    if (!customResult.IsClean)
+                    {
+                        _logger.Warning($"Custom signature matched: {customResult.ThreatName} (Severity: {customResult.Severity})");
+                        return new ScanResult
+                        {
+                            IsClean = false,
+                            ThreatName = customResult.ThreatName,
+                            Details = $"Custom signature detected: {customResult.Details}"
+                        };
+                    }
+                }
+
+                // 🆕 Windows Defenderスキャン実行（利用可能な場合）
+                if (_defenderScanner != null && _defenderScanner.DefenderAvailable)
+                {
+                    var defenderResult = await _defenderScanner.ScanAsync(data, fileName, _config.ScanTimeout);
+                    if (!defenderResult.IsClean)
+                    {
+                        _logger.Warning($"Windows Defender detected threat: {defenderResult.ThreatName}");
+                        return new ScanResult
+                        {
+                            IsClean = false,
+                            ThreatName = defenderResult.ThreatName,
+                            Details = $"Windows Defender detected: {defenderResult.Details}"
+                        };
+                    }
+                }
+
                 _logger.Info($"Scan completed: {fileName} is clean");
                 return new ScanResult
                 {
                     IsClean = true,
-                    Details = "No threats detected"
+                    Details = "No threats detected (YARA + ClamAV + Custom Signatures + Windows Defender)"
                 };
             }
             catch (Exception ex)

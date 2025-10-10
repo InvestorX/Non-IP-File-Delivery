@@ -147,3 +147,41 @@ NonIPWebConfig.exe
 - ClamAVがインストールされているか確認
 - 隔離フォルダの書き込み権限を確認
 - ポリシーファイルの形式を確認
+
+---
+
+### ClamAV拡張コマンド設定・運用例（Phase 3）
+
+#### 複数ファイル並列スキャン（MULTISCAN）
+- ファイルパス配列を指定して高速スキャン
+- 例: `/var/tmp/upload1.txt`, `/var/tmp/upload2.txt` など
+
+#### ディレクトリ連続スキャン（CONTSCAN）
+- ディレクトリパスを指定して全ファイルを再帰的にスキャン
+- 例: `/var/tmp/uploads/` など
+
+#### clamd統計情報取得（STATS）
+- サービス稼働状況やスキャン統計を取得
+- 運用監視やヘルスチェックに活用
+
+#### ウイルス定義DB再読み込み（RELOAD）
+- 新しい定義ファイル反映時に実行
+- サービス再起動不要で即時反映
+
+#### 設定例（appsettings.json/ini）
+```ini
+[ClamAV]
+Host=localhost
+Port=3310
+ScanTimeout=5000
+MultiScanTimeout=30000
+ContScanTimeout=60000
+EnableStats=true
+```
+
+#### 注意事項
+- MULTISCAN/CONTSCANはclamdのファイルパス参照権限が必要
+- STATS/RELOADは管理者権限での運用推奨
+- スキャン結果・統計はアプリ側で集計・監視可能
+
+---

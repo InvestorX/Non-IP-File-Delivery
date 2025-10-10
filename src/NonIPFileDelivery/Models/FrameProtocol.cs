@@ -47,7 +47,9 @@ public enum FrameType : byte
     Data = 0x01,
     Heartbeat = 0x02,
     Acknowledgment = 0x03,
+    Ack = 0x03,               // ACKエイリアス（Acknowledgmentと同じ）
     Control = 0x04,
+    Nack = 0x05,              // ✅ 追加: 否定応答（再送要求）
     FileTransfer = 0x10,
     SecurityScan = 0x20,
     SessionStart = 0x30,      // ✅ Phase 3追加: セッション開始
