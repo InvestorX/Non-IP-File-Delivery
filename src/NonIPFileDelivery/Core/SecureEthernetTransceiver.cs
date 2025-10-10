@@ -1,4 +1,7 @@
 using NonIpFileDelivery.Security;
+using NonIPFileDelivery.Resilience;
+using NonIPFileDelivery.Models;
+using NonIPFileDelivery.Services;
 using PacketDotNet;
 using SharpPcap;
 using SharpPcap.LibPcap;
@@ -23,11 +26,23 @@ public class SecureEthernetTransceiver : IDisposable
     private readonly Channel<SecureFrame> _receiveChannel;
     private readonly ConcurrentDictionary<Guid, long> _sessionSequences;
     private readonly ushort _customEtherType;
+    private readonly bool _receiverMode;
     private bool _isRunning;
     private long _sendSequence;
+    
+    // 再送制御とQoS機能
+    private readonly RetryPolicy _retryPolicy;
+    private readonly QoSFrameQueue _qosQueue;
+    private readonly CancellationTokenSource _backgroundTasksCts = new();
+    private Task? _qosProcessingTask;
 
     private const ushort CUSTOM_PROTOCOL_ETHERTYPE = 0x88B5;
     private const int MAX_SEQUENCE_GAP = 100; // リプレイ攻撃検知用
+
+    /// <summary>
+    /// フレーム受信時のイベント（B側でプロトコルプロキシが購読する）
+    /// </summary>
+    public event EventHandler<SecureFrame>? FrameReceived;
 
     /// <summary>
     /// セキュアなRaw Ethernetトランシーバーを初期化
@@ -35,11 +50,13 @@ public class SecureEthernetTransceiver : IDisposable
     /// <param name="interfaceName">ネットワークインターフェース名</param>
     /// <param name="remoteMac">対向機器のMACアドレス</param>
     /// <param name="cryptoEngine">暗号化エンジン</param>
+    /// <param name="receiverMode">受信モード（B側）の場合true</param>
     /// <param name="channelCapacity">受信チャンネル容量</param>
     public SecureEthernetTransceiver(
         string interfaceName,
         string remoteMac,
         CryptoEngine cryptoEngine,
+        bool receiverMode = false,
         int channelCapacity = 10000)
     {
         _device = LibPcapLiveDeviceList.Instance
@@ -50,6 +67,7 @@ public class SecureEthernetTransceiver : IDisposable
         _remoteMacAddress = PhysicalAddress.Parse(remoteMac.Replace(":", "-"));
         _cryptoEngine = cryptoEngine ?? throw new ArgumentNullException(nameof(cryptoEngine));
         _customEtherType = CUSTOM_PROTOCOL_ETHERTYPE;
+        _receiverMode = receiverMode;
         _sendSequence = 0;
 
         _receiveChannel = Channel.CreateBounded<SecureFrame>(
@@ -60,8 +78,17 @@ public class SecureEthernetTransceiver : IDisposable
 
         _sessionSequences = new ConcurrentDictionary<Guid, long>();
 
-        Log.Information("SecureEthernetTransceiver initialized: {Interface}, Local={LocalMac}, Remote={RemoteMac}",
-            interfaceName, _localMacAddress, _remoteMacAddress);
+        // RetryPolicyとQoSキューを初期化
+        _retryPolicy = new RetryPolicy(
+            new LoggingService(),
+            maxRetryAttempts: 3,
+            initialDelayMs: 100,
+            maxDelayMs: 5000);
+        
+        _qosQueue = new QoSFrameQueue();
+
+        Log.Information("SecureEthernetTransceiver initialized: {Interface}, Local={LocalMac}, Remote={RemoteMac}, ReceiverMode={ReceiverMode}",
+            interfaceName, _localMacAddress, _remoteMacAddress, receiverMode);
     }
 
     /// <summary>
@@ -76,8 +103,11 @@ public class SecureEthernetTransceiver : IDisposable
         _device.OnPacketArrival += OnPacketArrival;
         _device.StartCapture();
 
+        // QoS処理タスクを開始
+        _qosProcessingTask = Task.Run(async () => await ProcessQueueAsync(_backgroundTasksCts.Token));
+
         _isRunning = true;
-        Log.Information("Secure packet capture started on {Interface}", _device.Name);
+        Log.Information("Secure packet capture started on {Interface} with QoS and Retry enabled", _device.Name);
     }
 
     /// <summary>
@@ -119,6 +149,12 @@ public class SecureEthernetTransceiver : IDisposable
             // 受信チャンネルに投入
             _receiveChannel.Writer.TryWrite(frame);
 
+            // B側の場合、イベントも発火（プロトコルプロキシが購読）
+            if (_receiverMode)
+            {
+                FrameReceived?.Invoke(this, frame);
+            }
+
             Log.Debug("Received secure frame: {Frame}", frame);
         }
         catch (CryptographicException ex)
@@ -132,7 +168,7 @@ public class SecureEthernetTransceiver : IDisposable
     }
 
     /// <summary>
-    /// セキュアフレームを送信
+    /// セキュアフレームを送信（QoSキューに追加）
     /// </summary>
     /// <param name="frame">送信するフレーム</param>
     /// <param name="cancellationToken">キャンセルトークン</param>
@@ -144,28 +180,43 @@ public class SecureEthernetTransceiver : IDisposable
             frame.SequenceNumber = Interlocked.Increment(ref _sendSequence);
             frame.Timestamp = DateTimeOffset.UtcNow;
 
-            // フレームをシリアライズ（暗号化）
-            var frameData = frame.Serialize(_cryptoEngine);
+            // QoSキューに追加（バックグラウンドタスクが優先度順に処理）
+            _qosQueue.Enqueue(frame);
 
-            // Ethernetフレームに格納
-            var ethPacket = new EthernetPacket(
-                _localMacAddress,
-                _remoteMacAddress,
-                (EthernetType)_customEtherType)
-            {
-                PayloadData = frameData
-            };
+            Log.Debug("Frame enqueued for transmission: Session={SessionId}, Seq={Seq}, Protocol={Protocol}",
+                frame.SessionId, frame.SequenceNumber, frame.Protocol);
 
-            // 送信
-            await Task.Run(() => _device.SendPacket(ethPacket), cancellationToken);
-
-            Log.Debug("Sent secure frame: {Frame}", frame);
+            await Task.CompletedTask;
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Failed to send secure frame");
+            Log.Error(ex, "Failed to enqueue frame");
             throw;
         }
+    }
+
+    /// <summary>
+    /// フレームを実際に送信（内部用）
+    /// </summary>
+    private async Task SendFrameInternalAsync(SecureFrame frame, CancellationToken cancellationToken = default)
+    {
+        // フレームをシリアライズ（暗号化）
+        var frameData = frame.Serialize(_cryptoEngine);
+
+        // Ethernetフレームに格納
+        var ethPacket = new EthernetPacket(
+            _localMacAddress,
+            _remoteMacAddress,
+            (EthernetType)_customEtherType)
+        {
+            PayloadData = frameData
+        };
+
+        // 送信
+        await Task.Run(() => _device.SendPacket(ethPacket), cancellationToken);
+
+        Log.Debug("Sent secure frame: Session={SessionId}, Seq={Seq}, Protocol={Protocol}",
+            frame.SessionId, frame.SequenceNumber, frame.Protocol);
     }
 
     /// <summary>
@@ -208,6 +259,22 @@ public class SecureEthernetTransceiver : IDisposable
     }
 
     /// <summary>
+    /// 受信開始（B側モード用）
+    /// </summary>
+    public async Task StartReceivingAsync()
+    {
+        if (!_receiverMode)
+        {
+            Log.Warning("StartReceivingAsync called but not in receiver mode");
+        }
+
+        Start();
+
+        Log.Information("Started receiving in receiver mode");
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
     /// シーケンス番号を検証（リプレイ攻撃対策）
     /// </summary>
     private bool ValidateSequence(Guid sessionId, long sequenceNumber)
@@ -238,6 +305,46 @@ public class SecureEthernetTransceiver : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// QoSキューを処理してフレームを送信（バックグラウンドタスク）
+    /// </summary>
+    private async Task ProcessQueueAsync(CancellationToken cancellationToken)
+    {
+        Log.Information("QoS queue processing started");
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                // キューから優先度順にフレームを取得
+                var frame = await _qosQueue.DequeueAsync(cancellationToken);
+
+                // RetryPolicyを使用して送信
+                await _retryPolicy.ExecuteAsync(async () =>
+                {
+                    await SendFrameInternalAsync(frame, cancellationToken);
+                    return Task.CompletedTask;
+                }, $"SendFrame-{frame.SessionId}-{frame.SequenceNumber}", cancellationToken);
+
+                // 定期的に統計をログ出力
+                if (_qosQueue.TotalDequeued % 1000 == 0)
+                {
+                    _qosQueue.LogStatistics();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Information("QoS queue processing cancelled");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error in QoS queue processing");
+        }
+
+        Log.Information("QoS queue processing stopped");
+    }
+
     public void Dispose()
     {
         if (_isRunning)
@@ -246,7 +353,13 @@ public class SecureEthernetTransceiver : IDisposable
             _device.Close();
         }
 
+        // バックグラウンドタスクを停止
+        _backgroundTasksCts.Cancel();
+        _qosProcessingTask?.Wait(TimeSpan.FromSeconds(5));
+        _backgroundTasksCts.Dispose();
+
         _receiveChannel.Writer.Complete();
+        _qosQueue?.Dispose();
         _device?.Dispose();
         _cryptoEngine?.Dispose();
 

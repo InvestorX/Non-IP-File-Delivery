@@ -1,0 +1,202 @@
+[
+  {
+    "Id": "SIG-0001",
+    "Name": "EICAR-Test-File",
+    "HexPattern": "58354F2150254041505B345C505A58353428505E2937434329377D2445494341522D5354414E444152442D414E544956495255532D544553542D46494C452124482B482A",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "EICAR test file signature. Standard anti-virus test pattern.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0002",
+    "Name": "PE-Executable-MZ-Header",
+    "HexPattern": "4D5A",
+    "Severity": "Low",
+    "Offset": 0,
+    "MaxSearchSize": 2,
+    "Description": "DOS MZ executable header. Found at the beginning of PE files (EXE/DLL).",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0003",
+    "Name": "PDF-JavaScript-Launch",
+    "HexPattern": "2F4A61766153637269707420",
+    "Severity": "Medium",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "PDF JavaScript object. Potential exploit vector in PDF files.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0004",
+    "Name": "Office-Macro-VBA",
+    "HexPattern": "4174747269627574652056425F4E616D65203D",
+    "Severity": "Medium",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "Microsoft Office VBA macro attribute. May contain malicious macros.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0005",
+    "Name": "Suspicious-PowerShell-DownloadString",
+    "HexPattern": "446F776E6C6F6164537472696E67",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "PowerShell DownloadString method. Common in fileless malware.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0006",
+    "Name": "SQL-Injection-Pattern-UNION",
+    "HexPattern": "554E494F4E2053454C454354",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "SQL UNION SELECT statement. Classic SQL injection pattern.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0007",
+    "Name": "Suspicious-Base64-Encoded-EXE",
+    "HexPattern": "54565157414141",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "Base64 encoded MZ header (TVqQAAA). Hidden executable payload.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0008",
+    "Name": "PHP-WebShell-eval",
+    "HexPattern": "6576616C28",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "PHP eval function. Common in web shells and backdoors.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0009",
+    "Name": "Ransomware-Extension-Encrypted",
+    "HexPattern": "2E656E637279707465640A",
+    "Severity": "Critical",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "Common ransomware encrypted file extension marker.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0010",
+    "Name": "Suspicious-CMD-Start-Process",
+    "HexPattern": "636D642E65786520",
+    "Severity": "Medium",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "cmd.exe invocation. May indicate script-based attacks.",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0011",
+    "Name": "Suspicious-Registry-Run-Key",
+    "HexPattern": "534F4654574152455C4D6963726F736F66745C57696E646F77735C43757272656E7456657273696F6E5C52756E",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "Windows Run registry key path. Common persistence mechanism.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0012",
+    "Name": "Suspicious-CreateRemoteThread",
+    "HexPattern": "437265617465526D6F74655468726561644578",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "CreateRemoteThreadEx API. Process injection technique.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0013",
+    "Name": "Suspicious-AES-Encryption-Header",
+    "HexPattern": "53616C7465645F5F",
+    "Severity": "Medium",
+    "Offset": 0,
+    "MaxSearchSize": 8,
+    "Description": "OpenSSL AES encryption header 'Salted__'. May indicate encrypted payload.",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0014",
+    "Name": "Malware-Emotet-C2-Pattern",
+    "HexPattern": "504F5354202F",
+    "Severity": "Critical",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "HTTP POST request pattern. Common in botnet C2 communication.",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0015",
+    "Name": "Suspicious-Mimikatz-String",
+    "HexPattern": "6D696D696B61747A",
+    "Severity": "Critical",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "Mimikatz credential dumping tool string.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0016",
+    "Name": "ZIP-Archive-Header",
+    "HexPattern": "504B0304",
+    "Severity": "Low",
+    "Offset": 0,
+    "MaxSearchSize": 4,
+    "Description": "ZIP archive file header. May contain embedded threats.",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0017",
+    "Name": "RAR-Archive-Header",
+    "HexPattern": "526172211A0700",
+    "Severity": "Low",
+    "Offset": 0,
+    "MaxSearchSize": 7,
+    "Description": "RAR archive file header (v1.5+).",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0018",
+    "Name": "Suspicious-VBScript-WScript-Shell",
+    "HexPattern": "5753637269707453686865C6C6C",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "VBScript WScript.Shell object. Script-based attacks.",
+    "Enabled": true
+  },
+  {
+    "Id": "SIG-0019",
+    "Name": "Suspicious-FTP-Credential-Leak",
+    "HexPattern": "55534552202020",
+    "Severity": "Medium",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "FTP USER command. May contain leaked credentials.",
+    "Enabled": false
+  },
+  {
+    "Id": "SIG-0020",
+    "Name": "Suspicious-SSH-Private-Key",
+    "HexPattern": "2D2D2D2D2D424547494E205253412050524956415445204B45592D2D2D2D2D",
+    "Severity": "High",
+    "Offset": -1,
+    "MaxSearchSize": 0,
+    "Description": "RSA private key header. Credentials leak risk.",
+    "Enabled": true
+  }
+]

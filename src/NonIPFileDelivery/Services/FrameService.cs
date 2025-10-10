@@ -7,15 +7,25 @@ namespace NonIPFileDelivery.Services
     public class FrameService : IFrameService
     {
         private readonly ILoggingService _logger;
-        private readonly ICryptoService _cryptoService; // 🆕 追加
+        private readonly ICryptoService _cryptoService;
+        private readonly IFragmentationService _fragmentationService;
         private int _sequenceNumber;
+        
+        // ACK/NACK管理
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ushort, DateTime> _pendingAcks;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ushort, NonIPFrame> _retryQueue;
+        private const int ACK_TIMEOUT_MS = 5000; // 5秒
+        private const int MAX_RETRY_ATTEMPTS = 3;
 
-        // 🆕 コンストラクタ修正（ICryptoServiceを追加）
-        public FrameService(ILoggingService logger, ICryptoService cryptoService)
+        // コンストラクタ
+        public FrameService(ILoggingService logger, ICryptoService cryptoService, IFragmentationService fragmentationService)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _cryptoService = cryptoService ?? throw new ArgumentNullException(nameof(cryptoService));
+            _fragmentationService = fragmentationService ?? throw new ArgumentNullException(nameof(fragmentationService));
             _sequenceNumber = 0;
+            _pendingAcks = new System.Collections.Concurrent.ConcurrentDictionary<ushort, DateTime>();
+            _retryQueue = new System.Collections.Concurrent.ConcurrentDictionary<ushort, NonIPFrame>();
         }
 
         /// <summary>
@@ -240,6 +250,222 @@ namespace NonIPFileDelivery.Services
         public uint CalculateChecksum(byte[] data)
         {
             return Crc32Calculator.Calculate(data);
+        }
+
+        /// <summary>
+        /// ACKフレームを作成
+        /// </summary>
+        public NonIPFrame CreateAckFrame(byte[] sourceMac, byte[] destinationMac, ushort sequenceNumber)
+        {
+            if (sourceMac == null || sourceMac.Length != 6)
+                throw new ArgumentException("Source MAC address must be 6 bytes", nameof(sourceMac));
+            if (destinationMac == null || destinationMac.Length != 6)
+                throw new ArgumentException("Destination MAC address must be 6 bytes", nameof(destinationMac));
+
+            // ACKペイロード（受信確認したシーケンス番号）
+            var payload = BitConverter.GetBytes(sequenceNumber);
+
+            var frame = new NonIPFrame
+            {
+                Header = new FrameHeader
+                {
+                    SourceMAC = sourceMac,
+                    DestinationMAC = destinationMac,
+                    Type = FrameType.Ack,
+                    SequenceNumber = (ushort)System.Threading.Interlocked.Increment(ref _sequenceNumber),
+                    PayloadLength = (ushort)payload.Length,
+                    Flags = FrameFlags.None,
+                    Timestamp = DateTime.UtcNow
+                },
+                Payload = payload
+            };
+
+            _logger.Debug($"Created ACK frame for sequence {sequenceNumber}");
+            return frame;
+        }
+
+        /// <summary>
+        /// NACKフレームを作成（再送要求）
+        /// </summary>
+        public NonIPFrame CreateNackFrame(byte[] sourceMac, byte[] destinationMac, ushort sequenceNumber, string reason = "")
+        {
+            if (sourceMac == null || sourceMac.Length != 6)
+                throw new ArgumentException("Source MAC address must be 6 bytes", nameof(sourceMac));
+            if (destinationMac == null || destinationMac.Length != 6)
+                throw new ArgumentException("Destination MAC address must be 6 bytes", nameof(destinationMac));
+
+            // NACKペイロード（再送要求するシーケンス番号 + 理由）
+            using var ms = new System.IO.MemoryStream();
+            using var writer = new System.IO.BinaryWriter(ms);
+            writer.Write(sequenceNumber);
+            writer.Write(reason ?? string.Empty);
+            var payload = ms.ToArray();
+
+            var frame = new NonIPFrame
+            {
+                Header = new FrameHeader
+                {
+                    SourceMAC = sourceMac,
+                    DestinationMAC = destinationMac,
+                    Type = FrameType.Nack,
+                    SequenceNumber = (ushort)System.Threading.Interlocked.Increment(ref _sequenceNumber),
+                    PayloadLength = (ushort)payload.Length,
+                    Flags = FrameFlags.None,
+                    Timestamp = DateTime.UtcNow
+                },
+                Payload = payload
+            };
+
+            _logger.Warning($"Created NACK frame for sequence {sequenceNumber}: {reason}");
+            return frame;
+        }
+
+        /// <summary>
+        /// 大きなペイロードをフラグメント化して送信用フレーム作成
+        /// </summary>
+        public async System.Threading.Tasks.Task<System.Collections.Generic.List<NonIPFrame>> CreateFragmentedFramesAsync(
+            byte[] sourceMac, 
+            byte[] destinationMac, 
+            byte[] data, 
+            int maxFragmentSize = 8000,
+            FrameFlags additionalFlags = FrameFlags.None)
+        {
+            if (sourceMac == null || sourceMac.Length != 6)
+                throw new ArgumentException("Source MAC address must be 6 bytes", nameof(sourceMac));
+            if (destinationMac == null || destinationMac.Length != 6)
+                throw new ArgumentException("Destination MAC address must be 6 bytes", nameof(destinationMac));
+            if (data == null || data.Length == 0)
+                throw new ArgumentException("Data cannot be null or empty", nameof(data));
+
+            _logger.Info($"Creating fragmented frames: DataSize={data.Length}, MaxFragmentSize={maxFragmentSize}");
+
+            // FragmentationServiceを使用してフラグメント化
+            var fragments = await _fragmentationService.FragmentPayloadAsync(data, maxFragmentSize);
+
+            // MAC アドレスを設定
+            foreach (var frame in fragments)
+            {
+                frame.Header.SourceMAC = sourceMac;
+                frame.Header.DestinationMAC = destinationMac;
+                frame.Header.Flags |= additionalFlags; // 追加フラグをマージ
+            }
+
+            _logger.Info($"Created {fragments.Count} fragmented frames");
+            return fragments;
+        }
+
+        /// <summary>
+        /// フラグメントを追加して再構築を試行
+        /// </summary>
+        public async System.Threading.Tasks.Task<byte[]?> AddFragmentAndReassembleAsync(NonIPFrame fragmentFrame)
+        {
+            if (fragmentFrame == null)
+                return null;
+
+            try
+            {
+                _logger.Debug($"Adding fragment: Seq={fragmentFrame.Header.SequenceNumber}, GroupId={fragmentFrame.Header.FragmentInfo?.FragmentGroupId}");
+                
+                var result = await _fragmentationService.AddFragmentAsync(fragmentFrame);
+                
+                if (result != null)
+                {
+                    _logger.Info($"Fragment reassembly complete: GroupId={result.FragmentGroupId}, Size={result.ReassembledPayload.Length} bytes");
+                    return result.ReassembledPayload;
+                }
+                
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Fragment reassembly failed: {ex.Message}", ex);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// フラグメント受信進捗を取得
+        /// </summary>
+        public async System.Threading.Tasks.Task<double?> GetFragmentProgressAsync(Guid fragmentGroupId)
+        {
+            return await _fragmentationService.GetFragmentProgressAsync(fragmentGroupId);
+        }
+
+        /// <summary>
+        /// ACK待機中のフレームを追加
+        /// </summary>
+        public void RegisterPendingAck(NonIPFrame frame)
+        {
+            if (frame == null) return;
+
+            var sequenceNumber = frame.Header.SequenceNumber;
+            _pendingAcks[sequenceNumber] = DateTime.UtcNow;
+            _retryQueue[sequenceNumber] = frame;
+
+            _logger.Debug($"Registered pending ACK for sequence {sequenceNumber}");
+        }
+
+        /// <summary>
+        /// ACK受信を処理
+        /// </summary>
+        public bool ProcessAck(ushort sequenceNumber)
+        {
+            if (_pendingAcks.TryRemove(sequenceNumber, out _))
+            {
+                _retryQueue.TryRemove(sequenceNumber, out _);
+                _logger.Debug($"Processed ACK for sequence {sequenceNumber}");
+                return true;
+            }
+
+            _logger.Warning($"Received ACK for unknown sequence {sequenceNumber}");
+            return false;
+        }
+
+        /// <summary>
+        /// タイムアウトしたフレームを取得（再送用）
+        /// </summary>
+        public System.Collections.Generic.List<NonIPFrame> GetTimedOutFrames()
+        {
+            var timedOutFrames = new System.Collections.Generic.List<NonIPFrame>();
+            var now = DateTime.UtcNow;
+
+            foreach (var kvp in _pendingAcks)
+            {
+                var sequenceNumber = kvp.Key;
+                var sentTime = kvp.Value;
+
+                if ((now - sentTime).TotalMilliseconds > ACK_TIMEOUT_MS)
+                {
+                    if (_retryQueue.TryGetValue(sequenceNumber, out var frame))
+                    {
+                        timedOutFrames.Add(frame);
+                        _logger.Warning($"Frame sequence {sequenceNumber} timed out, adding to retry queue");
+                    }
+
+                    // タイムアウトエントリを削除
+                    _pendingAcks.TryRemove(sequenceNumber, out _);
+                }
+            }
+
+            return timedOutFrames;
+        }
+
+        /// <summary>
+        /// 再送キューをクリア
+        /// </summary>
+        public void ClearRetryQueue()
+        {
+            _pendingAcks.Clear();
+            _retryQueue.Clear();
+            _logger.Info("Retry queue cleared");
+        }
+
+        /// <summary>
+        /// 統計情報を取得
+        /// </summary>
+        public (int PendingAcks, int RetryQueueSize) GetStatistics()
+        {
+            return (_pendingAcks.Count, _retryQueue.Count);
         }
 
         private byte[] SerializeHeader(FrameHeader header)

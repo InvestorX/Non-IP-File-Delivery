@@ -1,0 +1,190 @@
+<Window x:Class="NonIPConfigTool.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.modernwpf.com/2019"
+        xmlns:vm="clr-namespace:NonIPConfigTool.ViewModels"
+        mc:Ignorable="d"
+        Title="Non-IP File Delivery 設定ツール" 
+        Height="700" 
+        Width="900"
+        WindowStartupLocation="CenterScreen"
+        ui:WindowHelper.UseModernWindowStyle="True">
+    
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- メニューバー -->
+        <Menu Grid.Row="0">
+            <MenuItem Header="ファイル(_F)">
+                <MenuItem Header="新規作成(_N)" Command="{Binding NewConfigCommand}" InputGestureText="Ctrl+N"/>
+                <MenuItem Header="開く(_O)..." Command="{Binding OpenConfigCommand}" InputGestureText="Ctrl+O"/>
+                <Separator/>
+                <MenuItem Header="保存(_S)" Command="{Binding SaveConfigCommand}" InputGestureText="Ctrl+S"/>
+                <MenuItem Header="名前を付けて保存(_A)..." Command="{Binding SaveConfigAsCommand}" InputGestureText="Ctrl+Shift+S"/>
+                <Separator/>
+                <MenuItem Header="終了(_X)" Command="{Binding ExitCommand}" InputGestureText="Alt+F4"/>
+            </MenuItem>
+            <MenuItem Header="ツール(_T)">
+                <MenuItem Header="設定の検証(_V)" Command="{Binding ValidateConfigCommand}" InputGestureText="F5"/>
+            </MenuItem>
+            <MenuItem Header="ヘルプ(_H)">
+                <MenuItem Header="バージョン情報(_A)"/>
+            </MenuItem>
+        </Menu>
+
+        <!-- タブコントロール -->
+        <TabControl Grid.Row="1" Margin="10">
+            
+            <!-- 一般設定タブ -->
+            <TabItem Header="⚙️ 一般設定">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="20">
+                        <TextBlock Text="一般設定" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
+                        
+                        <TextBlock Text="動作モード" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <ComboBox ItemsSource="{Binding ModeOptions}" 
+                                  SelectedItem="{Binding Config.Mode, Mode=TwoWay}"
+                                  Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="ログレベル" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <ComboBox ItemsSource="{Binding LogLevelOptions}" 
+                                  SelectedItem="{Binding Config.LogLevel, Mode=TwoWay}"
+                                  Margin="0,0,0,15"/>
+
+                        <TextBlock Text="説明" FontWeight="SemiBold" Margin="0,10,0,5"/>
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,15">
+                            <Run Text="動作モード:"/>
+                            <LineBreak/>
+                            <Run Text="• ActiveStandby: アクティブ-スタンバイ構成"/>
+                            <LineBreak/>
+                            <Run Text="• LoadBalancing: 負荷分散構成"/>
+                            <LineBreak/><LineBreak/>
+                            <Run Text="ログレベル: Debug, Info, Warning, Error から選択"/>
+                        </TextBlock>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ネットワーク設定タブ -->
+            <TabItem Header="🌐 ネットワーク">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="20">
+                        <TextBlock Text="ネットワーク設定" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
+                        
+                        <TextBlock Text="ネットワークインターフェース" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <ComboBox ItemsSource="{Binding AvailableInterfaces}" 
+                                  SelectedItem="{Binding Config.Interface, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                  IsEditable="True"
+                                  Margin="0,0,0,5"/>
+                        <TextBlock Text="{Binding Config.(Validation.Errors)[0].ErrorContent}" 
+                                   Foreground="Red" 
+                                   FontSize="11"
+                                   Margin="0,0,0,10"
+                                   Visibility="{Binding Config.(Validation.HasError), Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                        
+                        <TextBlock Text="フレームサイズ (bytes)" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.FrameSize, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <CheckBox Content="暗号化を有効にする" 
+                                  IsChecked="{Binding Config.Encryption, Mode=TwoWay}"
+                                  Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="EtherType" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.EtherType, Mode=TwoWay}"
+                                 Margin="0,0,0,15"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- セキュリティ設定タブ -->
+            <TabItem Header="🔐 セキュリティ">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="20">
+                        <TextBlock Text="セキュリティ設定" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
+                        
+                        <CheckBox Content="ウイルススキャンを有効にする" 
+                                  IsChecked="{Binding Config.EnableVirusScan, Mode=TwoWay}"
+                                  Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="スキャンタイムアウト (ms)" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.ScanTimeout, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="隔離パス" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.QuarantinePath, Mode=TwoWay}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="ポリシーファイル" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.PolicyFile, Mode=TwoWay}"
+                                 Margin="0,0,0,15"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- パフォーマンス設定タブ -->
+            <TabItem Header="⚡ パフォーマンス">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="20">
+                        <TextBlock Text="パフォーマンス設定" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
+                        
+                        <TextBlock Text="最大メモリ (MB)" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.MaxMemoryMB, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="バッファサイズ (bytes)" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.BufferSize, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="スレッドプール" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <ComboBox Margin="0,0,0,15">
+                            <ComboBoxItem Content="auto" IsSelected="True"/>
+                            <ComboBoxItem Content="manual"/>
+                        </ComboBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- 冗長化設定タブ -->
+            <TabItem Header="🔄 冗長化">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="20">
+                        <TextBlock Text="冗長化設定" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
+                        
+                        <TextBlock Text="ハートビート間隔 (ms)" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.HeartbeatInterval, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="フェイルオーバータイムアウト (ms)" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <TextBox Text="{Binding Config.FailoverTimeout, Mode=TwoWay, ValidatesOnNotifyDataErrors=True}"
+                                 Margin="0,0,0,15"/>
+                        
+                        <TextBlock Text="データ同期モード" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                        <ComboBox Margin="0,0,0,15">
+                            <ComboBoxItem Content="realtime" IsSelected="True"/>
+                            <ComboBoxItem Content="batch"/>
+                        </ComboBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- ステータスバー -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="10,5">
+            <ui:ProgressRing IsActive="{Binding IsLoading}" Width="20" Height="20" Margin="0,0,10,0"/>
+            <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center"/>
+        </StackPanel>
+
+    </Grid>
+</Window>
