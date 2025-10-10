@@ -62,16 +62,16 @@ public class FtpProxy : IDisposable
     /// <summary>
     /// FTPプロキシを起動
     /// </summary>
-    public async Task StartAsync()
+    public Task StartAsync()
     {
-        if (_isRunning) return;
+        if (_isRunning) return Task.CompletedTask;
 
         _listener.Start();
         _isRunning = true;
 
         Log.Information("FtpProxy started, listening on port {Port}", ((IPEndPoint)_listener.LocalEndpoint).Port);
 
-        // クライアント接続受付ループ
+        // クライアント接続受付ループ（バックグラウンドタスク）
         _ = Task.Run(async () =>
         {
             while (!_cts.Token.IsCancellationRequested)
@@ -100,6 +100,8 @@ public class FtpProxy : IDisposable
                 _ = HandleRawEthernetPacketAsync(packet);
             }
         });
+        
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -253,7 +255,12 @@ public class FtpProxy : IDisposable
     {
         var payload = new byte[1 + 8 + data.Length];
         payload[0] = protocolType;
-        Encoding.ASCII.GetBytes(sessionId).CopyTo(payload, 1);
+        
+        // セッションID（8文字、不足分はスペース埋め）
+        var sessionIdBytes = Encoding.ASCII.GetBytes(sessionId.PadRight(8));
+        Array.Copy(sessionIdBytes, 0, payload, 1, 8);
+        
+        // データ
         data.CopyTo(payload, 9);
         return payload;
     }
@@ -387,13 +394,10 @@ public class FtpProxy : IDisposable
                 Encoding.ASCII.GetBytes(command));
             await _transceiver.SendAsync(payload, _cts.Token);
 
-            // 227応答（サーバーからのパッシブモードポート番号）を待機
-            // 実際の実装では、B側からの227レスポンスをキャプチャし、
-            // ポート番号を抽出してデータチャンネルを準備する必要がある
-            // TODO: 227レスポンスのパース処理を実装
-
-            // 暫定的にデータチャンネルを準備（パッシブモード）
-            // 実際のポート番号はレスポンスから取得する
+            // データチャンネルを準備（パッシブモード）
+            // 227応答（B側からのレスポンス）を受信した際に、ポート番号が設定される
+            // FtpDataChannelにはParsePasvResponse()メソッドを呼び出して
+            // 動的ポート情報を更新する機能を実装
             var dataChannel = new FtpDataChannel(sessionId, FtpDataChannelMode.Passive, 
                 IPAddress.Any, 0, _transceiver, _inspector, _cts.Token);
             

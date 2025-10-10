@@ -162,7 +162,7 @@ public class RedundancyService : IRedundancyService
         }
     }
 
-    public async Task<bool> PerformFailoverAsync(string reason)
+    public Task<bool> PerformFailoverAsync(string reason)
     {
         lock (_lockObject)
         {
@@ -175,7 +175,7 @@ public class RedundancyService : IRedundancyService
                 if (activeNode == null)
                 {
                     _logger.Error("No active node found for failover");
-                    return false;
+                    return Task.FromResult(false);
                 }
 
                 // Standbyノードを見つける
@@ -187,7 +187,7 @@ public class RedundancyService : IRedundancyService
                 if (standbyNode == null)
                 {
                     _logger.Error("No healthy standby node available for failover");
-                    return false;
+                    return Task.FromResult(false);
                 }
 
                 // フェイルオーバー実行
@@ -206,12 +206,12 @@ public class RedundancyService : IRedundancyService
                 _failoverHistory.Add(failoverEvent);
 
                 _logger.Info($"Failover successful: {activeNode.NodeId} -> {standbyNode.NodeId}");
-                return true;
+                return Task.FromResult(true);
             }
             catch (Exception ex)
             {
                 _logger.Error($"Failover failed: {ex.Message}");
-                return false;
+                return Task.FromResult(false);
             }
         }
     }

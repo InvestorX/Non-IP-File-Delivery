@@ -214,12 +214,12 @@ namespace NonIPFileDelivery.Services
         /// <summary>
         /// ファイルを隔離
         /// </summary>
-        public async Task<bool> QuarantineFile(string filePath, string reason)
+        public Task<bool> QuarantineFile(string filePath, string reason)
         {
             if (!File.Exists(filePath))
             {
                 _logger.Warning($"File not found for quarantine: {filePath}");
-                return false;
+                return Task.FromResult(false);
             }
 
             try
@@ -232,12 +232,12 @@ namespace NonIPFileDelivery.Services
                 File.Move(filePath, quarantinePath);
                 _logger.Warning($"File quarantined: {quarantinePath} (Reason: {reason})");
 
-                return true;
+                return Task.FromResult(true);
             }
             catch (Exception ex)
             {
                 _logger.Error($"Failed to quarantine file: {ex.Message}", ex);
-                return false;
+                return Task.FromResult(false);
             }
         }
     }

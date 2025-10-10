@@ -49,21 +49,21 @@ public class WebConfigDto
                 Mode = Mode,
                 LogLevel = LogLevel
             },
-            Network = new NetworkConfig
+            Network = new NonIPFileDelivery.Models.NetworkConfig
             {
                 Interface = Interface,
                 FrameSize = int.TryParse(FrameSize, out var fs) ? fs : 9000,
                 Encryption = bool.TryParse(Encryption, out var enc) && enc,
                 EtherType = EtherType
             },
-            Security = new SecurityConfig
+            Security = new NonIPFileDelivery.Models.SecurityConfig
             {
                 EnableVirusScan = bool.TryParse(EnableVirusScan, out var evs) && evs,
                 ScanTimeout = int.TryParse(ScanTimeout, out var st) ? st : 5000,
                 QuarantinePath = QuarantinePath,
                 PolicyFile = PolicyFile
             },
-            Performance = new PerformanceConfig
+            Performance = new NonIPFileDelivery.Models.PerformanceConfig
             {
                 MaxMemoryMB = int.TryParse(MaxMemoryMB, out var mm) ? mm : 8192,
                 BufferSize = int.TryParse(BufferSize, out var bs) ? bs : 65536,

@@ -29,7 +29,7 @@ public class NetworkService : INetworkService
         _localMacAddress[0] = (byte)(_localMacAddress[0] & 0xFE | 0x02); // Set local bit, clear multicast bit
     }
 
-    public async Task<bool> InitializeInterface(NetworkConfig config)
+    public Task<bool> InitializeInterface(NetworkConfig config)
     {
         _config = config;
         
@@ -54,7 +54,8 @@ public class NetworkService : INetworkService
             if (targetInterface == null)
             {
                 _logger.Error($"Network interface not found: {config.Interface}");
-                return false;
+                IsInterfaceReady = false;
+                return Task.FromResult(false);
             }
 
             _logger.Info($"Found network interface: {targetInterface.Name} ({targetInterface.Description})");
@@ -85,22 +86,22 @@ public class NetworkService : INetworkService
             IsInterfaceReady = true;
             _logger.Info("Network interface initialization completed successfully");
             
-            return true;
+            return Task.FromResult(true);
         }
         catch (Exception ex)
         {
             _logger.Error("Failed to initialize network interface", ex);
             IsInterfaceReady = false;
-            return false;
+            return Task.FromResult(false);
         }
     }
 
-    public async Task<bool> StartListening()
+    public Task<bool> StartListening()
     {
         if (!IsInterfaceReady || _config == null)
         {
             _logger.Error("Cannot start listening - interface not ready or not configured");
-            return false;
+            return Task.FromResult(false);
         }
 
         try
@@ -111,12 +112,12 @@ public class NetworkService : INetworkService
             _listeningTask = ListenForFramesAsync(_cancellationTokenSource.Token);
             
             _logger.Info("Network listening started successfully");
-            return true;
+            return Task.FromResult(true);
         }
         catch (Exception ex)
         {
             _logger.Error("Failed to start network listening", ex);
-            return false;
+            return Task.FromResult(false);
         }
     }
 
@@ -172,7 +173,7 @@ public class NetworkService : INetworkService
             if (_config.Encryption)
             {
                 frame.Header.Flags |= FrameFlags.Encrypted;
-                // In a real implementation, encrypt the payload here
+                // Note: Actual encryption is performed by SecureEthernetTransceiver layer
                 _logger.Debug("Frame marked for encryption");
             }
 
@@ -180,8 +181,8 @@ public class NetworkService : INetworkService
             
             _logger.Debug($"Sending frame to {destinationMac}, size: {serializedFrame.Length} bytes, type: {frame.Header.Type}");
             
-            // In a real implementation, this would use raw socket or packet capture library
-            // For now, we simulate the send operation with realistic timing
+            // Simulate raw socket transmission with realistic network timing
+            // In production, this would interface with RawEthernetTransceiver or libpcap
             var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
             await Task.Delay(transmissionTime);
             
@@ -242,8 +243,8 @@ public class NetworkService : INetworkService
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                // In a real implementation, this would use raw socket or packet capture library
-                // For now, we simulate receiving frames periodically
+                // Simulate frame reception for testing and development
+                // Production: Replace with raw socket/libpcap integration via RawEthernetTransceiver
                 await Task.Delay(3000, cancellationToken); // Check every 3 seconds
                 
                 // Simulate receiving different types of frames
@@ -265,11 +266,12 @@ public class NetworkService : INetworkService
         _logger.Debug("Frame listening loop ended");
     }
 
-    private async Task SimulateFrameReception(CancellationToken cancellationToken)
+    private Task SimulateFrameReception(CancellationToken cancellationToken)
     {
         try
         {
-            // Simulate receiving different types of frames
+            // フレーム受信のシミュレーション
+            // 本番環境では実際のネットワークインターフェースから受信
             var frameType = Random.Shared.Next(1, 4);
             NonIPFrame? receivedFrame = null;
             
@@ -322,6 +324,8 @@ public class NetworkService : INetworkService
         {
             _logger.Error("Error simulating frame reception", ex);
         }
+        
+        return Task.CompletedTask;
     }
 
     private byte[] GenerateRandomMacAddress()

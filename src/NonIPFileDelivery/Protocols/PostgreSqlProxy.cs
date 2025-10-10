@@ -66,9 +66,9 @@ public class PostgreSqlProxy : IDisposable
     /// <summary>
     /// PostgreSQLプロキシを起動
     /// </summary>
-    public async Task StartAsync()
+    public Task StartAsync()
     {
-        if (_isRunning) return;
+        if (_isRunning) return Task.CompletedTask;
 
         _listener.Start();
         _isRunning = true;
@@ -76,7 +76,7 @@ public class PostgreSqlProxy : IDisposable
         Log.Information("PostgreSqlProxy started, listening on port {Port}",
             ((IPEndPoint)_listener.LocalEndpoint).Port);
 
-        // クライアント接続受付ループ
+        // クライアント接続受付ループ（バックグラウンドタスク）
         _ = Task.Run(async () =>
         {
             while (!_cts.Token.IsCancellationRequested)
@@ -105,6 +105,8 @@ public class PostgreSqlProxy : IDisposable
                 _ = HandleRawEthernetPacketAsync(packet);
             }
         });
+        
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -235,13 +237,13 @@ public class PostgreSqlProxy : IDisposable
     /// <summary>
     /// Raw Ethernetパケットから受信したPostgreSQLレスポンスを処理
     /// </summary>
-    private async Task HandleRawEthernetPacketAsync(PacketDotNet.EthernetPacket packet)
+    private Task HandleRawEthernetPacketAsync(PacketDotNet.EthernetPacket packet)
     {
         try
         {
             var payload = packet.PayloadData;
 
-            if (payload.Length < 10) return;
+            if (payload.Length < 10) return Task.CompletedTask;
 
             var protocolType = payload[0];
             var sessionId = Encoding.ASCII.GetString(payload, 1, 8);
@@ -288,6 +290,8 @@ public class PostgreSqlProxy : IDisposable
         {
             Log.Error(ex, "Error handling Raw Ethernet packet");
         }
+        
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -479,7 +483,11 @@ public class PostgreSqlProxy : IDisposable
         var payload = new byte[1 + 8 + 1 + data.Length];
         
         payload[0] = protocolType;
-        Encoding.ASCII.GetBytes(sessionId).CopyTo(payload, 1);
+        
+        // セッションID（8文字、不足分はスペース埋め）
+        var sessionIdBytes = Encoding.ASCII.GetBytes(sessionId.PadRight(8));
+        Array.Copy(sessionIdBytes, 0, payload, 1, 8);
+        
         payload[9] = messageType;
         data.CopyTo(payload, 10);
         
