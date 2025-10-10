@@ -28,7 +28,7 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = false; // 開発環境ではfalse（本番ではtrue推奨）
+    options.RequireHttpsMetadata = builder.Environment.IsDevelopment() ? false : true; // 開発環境ではfalse、本番ではtrue
     options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
@@ -72,7 +72,10 @@ var configPath = Path.Combine(AppContext.BaseDirectory, "config.ini");
 app.UseCors();
 
 // HTTPSリダイレクト（本番環境では有効化推奨）
-// app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 // Serve static files (HTML, CSS, JS)
 app.UseStaticFiles();
