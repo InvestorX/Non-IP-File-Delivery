@@ -82,7 +82,19 @@ public class FtpProxyB : IDisposable
             return;
         }
 
-        _ = Task.Run(async () => await HandleFtpFrameAsync(frame));
+        // Fire-and-Forgetパターン: 例外を適切にログ記録
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await HandleFtpFrameAsync(frame);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error handling FTP frame: Protocol={Protocol}, SessionId={SessionId}", 
+                    frame.Protocol, frame.SessionId);
+            }
+        });
     }
 
     /// <summary>
@@ -149,7 +161,17 @@ public class FtpProxyB : IDisposable
                     sessionId, _targetFtpHost, _targetFtpPort);
 
                 // FTPサーバからのレスポンスを非同期で監視
-                _ = Task.Run(async () => await MonitorFtpServerResponseAsync(sessionId, client));
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await MonitorFtpServerResponseAsync(sessionId, client);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Error monitoring FTP server response: SessionId={SessionId}", sessionId);
+                    }
+                });
             }
 
             // FTPサーバにコマンドを転送
@@ -430,7 +452,17 @@ internal class FtpDataChannelB : IDisposable
                 _sessionId, _targetFtpHost, dataPort);
 
             // FTPサーバからのデータを受信してRaw Ethernetで転送（DOWNLOADの場合）
-            _ = Task.Run(async () => await ReceiveFromServerAsync());
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ReceiveFromServerAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Error receiving data from FTP server: SessionId={SessionId}", _sessionId);
+                }
+            });
         }
         catch (Exception ex)
         {

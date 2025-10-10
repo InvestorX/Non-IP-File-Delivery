@@ -97,10 +97,22 @@ namespace NonIPFileDelivery.Services
                 result.IsValid = true;
                 return result;
             }
+            catch (System.Text.DecoderFallbackException ex)
+            {
+                _logger.Error($"FTP analysis failed: Text decoding error - {ex.Message}", ex);
+                result.ErrorMessage = "FTP command contains invalid characters";
+                return result;
+            }
+            catch (ArgumentException ex)
+            {
+                _logger.Error($"FTP analysis failed: Invalid argument - {ex.Message}", ex);
+                result.ErrorMessage = $"Invalid FTP data format: {ex.Message}";
+                return result;
+            }
             catch (Exception ex)
             {
-                _logger.Error($"FTP analysis error: {ex.Message}", ex);
-                result.ErrorMessage = ex.Message;
+                _logger.Error($"Unexpected FTP analysis error: {ex.Message}", ex);
+                result.ErrorMessage = $"Analysis error: {ex.Message}";
                 return result;
             }
         }

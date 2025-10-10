@@ -37,11 +37,36 @@ class Program
 
             Log.Information("Configuration: Interface={Interface}", interfaceName);
 
-            // 暗号化キー（実運用では安全な場所から読み込む）
-            var cryptoKey = new byte[32]; // 256-bit key
-            // TODO: 実際のキー管理実装（設定ファイル、KMS、環境変数等）
-            using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
-            rng.GetBytes(cryptoKey);
+            // 暗号化キー（A側と同じキーを使用する必要がある）
+            // 優先順位: 1. 環境変数 2. 設定ファイル 3. エラー
+            byte[] cryptoKey;
+            var cryptoKeyBase64 = Environment.GetEnvironmentVariable("NONIP_CRYPTO_KEY");
+            
+            if (!string.IsNullOrEmpty(cryptoKeyBase64))
+            {
+                // 環境変数から読み込み
+                cryptoKey = Convert.FromBase64String(cryptoKeyBase64);
+                Log.Information("Crypto key loaded from environment variable");
+            }
+            else if (File.Exists("crypto.key"))
+            {
+                // ファイルから読み込み（Base64エンコード）
+                var keyContent = await File.ReadAllTextAsync("crypto.key");
+                cryptoKey = Convert.FromBase64String(keyContent.Trim());
+                Log.Information("Crypto key loaded from crypto.key file");
+            }
+            else
+            {
+                Log.Fatal("Crypto key not found. Set NONIP_CRYPTO_KEY environment variable or create crypto.key file");
+                Log.Information("To generate a key: openssl rand -base64 32");
+                return 1;
+            }
+
+            if (cryptoKey.Length != 32)
+            {
+                Log.Fatal("Invalid crypto key length: {Length} bytes (expected 32 bytes)", cryptoKey.Length);
+                return 1;
+            }
 
             // CryptoEngine初期化
             var cryptoEngine = new CryptoEngine(cryptoKey);
@@ -112,9 +137,34 @@ class Program
 
             return 0;
         }
+        catch (OperationCanceledException)
+        {
+            Log.Information("Shutdown requested (OperationCanceledException)");
+            return 0;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Log.Fatal(ex, "権限エラー: ファイルやデバイスへのアクセスに失敗しました");
+            return 2;
+        }
+        catch (System.IO.FileNotFoundException ex)
+        {
+            Log.Fatal(ex, "ファイルが見つかりません: {FileName}", ex.FileName);
+            return 3;
+        }
+        catch (FormatException ex)
+        {
+            Log.Fatal(ex, "暗号化キーの形式が不正です: {Message}", ex.Message);
+            return 4;
+        }
+        catch (ArgumentException ex)
+        {
+            Log.Fatal(ex, "引数エラー: {Message}", ex.Message);
+            return 5;
+        }
         catch (Exception ex)
         {
-            Log.Fatal(ex, "Fatal error in Non-IP File Delivery B");
+            Log.Fatal(ex, "予期しない致命的エラーが発生しました");
             return 1;
         }
         finally

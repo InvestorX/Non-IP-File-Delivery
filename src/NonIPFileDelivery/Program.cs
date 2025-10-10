@@ -40,6 +40,28 @@ class Program
             var remoteMac = config["Network:RemoteMacAddress"] ?? throw new Exception("RemoteMacAddress not configured");
             var yaraRulesPath = config["Security:YaraRulesPath"] ?? "rules/*.yar";
 
+            // 暗号化キー読み込み（SecureEthernetTransceiver使用時に必要）
+            // 優先順位: 1. 環境変数 2. 設定ファイル 3. エラー（将来の暗号化対応のため）
+            byte[]? cryptoKey = null;
+            var cryptoKeyBase64 = Environment.GetEnvironmentVariable("NONIP_CRYPTO_KEY");
+            
+            if (!string.IsNullOrEmpty(cryptoKeyBase64))
+            {
+                cryptoKey = Convert.FromBase64String(cryptoKeyBase64);
+                Log.Information("Crypto key loaded from environment variable");
+            }
+            else if (File.Exists("crypto.key"))
+            {
+                var keyContent = await File.ReadAllTextAsync("crypto.key");
+                cryptoKey = Convert.FromBase64String(keyContent.Trim());
+                Log.Information("Crypto key loaded from crypto.key file");
+            }
+            else
+            {
+                Log.Warning("Crypto key not found. If using SecureEthernetTransceiver, set NONIP_CRYPTO_KEY or create crypto.key");
+                Log.Information("To generate a key: openssl rand -base64 32");
+            }
+
             // コンポーネント初期化
             using var transceiver = new RawEthernetTransceiver(interfaceName, remoteMac);
             using var inspector = new SecurityInspector(Directory.GetFiles(yaraRulesPath));

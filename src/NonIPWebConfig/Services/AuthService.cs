@@ -112,13 +112,40 @@ public class AuthService : IAuthService
                 Message = "ログインに成功しました"
             };
         }
-        catch (Exception ex)
+        catch (ArgumentException ex)
         {
-            _logger.LogError(ex, "Error during authentication for user: {Username}", username);
+            _logger.LogError(ex, "Authentication failed: Invalid argument for user: {Username}", username);
             return new AuthResponse
             {
                 Success = false,
-                Message = "認証処理中にエラーが発生しました"
+                Message = "認証情報の形式が正しくありません"
+            };
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogError(ex, "Authentication failed: Invalid operation for user: {Username}", username);
+            return new AuthResponse
+            {
+                Success = false,
+                Message = "認証処理が正常に実行できませんでした"
+            };
+        }
+        catch (IOException ex)
+        {
+            _logger.LogError(ex, "Authentication failed: I/O error for user: {Username}", username);
+            return new AuthResponse
+            {
+                Success = false,
+                Message = "ユーザーデータの読み込みに失敗しました"
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error during authentication for user: {Username}", username);
+            return new AuthResponse
+            {
+                Success = false,
+                Message = "認証処理中に予期しないエラーが発生しました"
             };
         }
     }

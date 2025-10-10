@@ -588,7 +588,7 @@ public partial class MainViewModel : ObservableObject
     /// アプリケーション終了
     /// </summary>
     [RelayCommand]
-    private void Exit()
+    private async Task ExitAsync()
     {
         if (Config.IsDirty)
         {
@@ -603,7 +603,8 @@ public partial class MainViewModel : ObservableObject
 
             if (result == MessageBoxResult.No)
             {
-                SaveConfigAsync().Wait();
+                // デッドロック防止: .Wait()の代わりにawaitを使用
+                await SaveConfigAsync();
             }
         }
 

@@ -61,7 +61,19 @@ public class PostgreSqlProxyB : IDisposable
             return;
         }
 
-        _ = Task.Run(async () => await HandlePostgreSqlFrameAsync(frame));
+        // Fire-and-Forgetパターン: 例外を適切にログ記録
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await HandlePostgreSqlFrameAsync(frame);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error handling PostgreSQL frame: Protocol={Protocol}, SessionId={SessionId}", 
+                    frame.Protocol, frame.SessionId);
+            }
+        });
     }
 
     private async Task HandlePostgreSqlFrameAsync(SecureFrame frame)
@@ -110,7 +122,17 @@ public class PostgreSqlProxyB : IDisposable
                 Log.Information("New PostgreSQL connection established: SessionId={SessionId}, Server={Host}:{Port}",
                     sessionId, _targetPgHost, _targetPgPort);
 
-                _ = Task.Run(async () => await MonitorPostgreSqlServerResponseAsync(sessionId, client));
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await MonitorPostgreSqlServerResponseAsync(sessionId, client);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Error monitoring PostgreSQL server response: SessionId={SessionId}", sessionId);
+                    }
+                });
             }
 
             // PostgreSQLサーバにデータを転送

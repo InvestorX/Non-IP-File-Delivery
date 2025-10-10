@@ -113,14 +113,36 @@ namespace NonIPFileDelivery.Services
                     DataSize = packetData.Length
                 };
             }
-            catch (Exception ex)
+            catch (ArgumentException ex)
             {
-                _logger.Error($"Protocol analysis error: {ex.Message}", ex);
+                _logger.Error($"Protocol analysis failed: Invalid argument - {ex.Message}", ex);
                 return new ProtocolAnalysisResult
                 {
                     Protocol = ProtocolType.Unknown,
                     IsValid = false,
-                    ErrorMessage = ex.Message,
+                    ErrorMessage = $"Invalid packet format: {ex.Message}",
+                    DataSize = packetData.Length
+                };
+            }
+            catch (IndexOutOfRangeException ex)
+            {
+                _logger.Error($"Protocol analysis failed: Buffer overrun - {ex.Message}", ex);
+                return new ProtocolAnalysisResult
+                {
+                    Protocol = ProtocolType.Unknown,
+                    IsValid = false,
+                    ErrorMessage = "Malformed packet: Insufficient data",
+                    DataSize = packetData.Length
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Unexpected protocol analysis error: {ex.Message}", ex);
+                return new ProtocolAnalysisResult
+                {
+                    Protocol = ProtocolType.Unknown,
+                    IsValid = false,
+                    ErrorMessage = $"Analysis error: {ex.Message}",
                     DataSize = packetData.Length
                 };
             }
