@@ -55,7 +55,7 @@ builder.Services.AddCors(options =>
 });
 
 // サービス登録
-builder.Services.AddSingleton<IConfigurationService, ConfigurationService>();
+builder.Services.AddSingleton(sp => new NonIPWebConfig.Services.ConfigurationService(AppContext.BaseDirectory));
 builder.Services.AddSingleton<NonIPWebConfig.Services.ConfigValidationService>();
 builder.Services.AddSingleton<IAuthService, AuthService>();
 
