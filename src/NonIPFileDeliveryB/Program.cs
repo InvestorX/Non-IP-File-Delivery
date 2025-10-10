@@ -1,157 +1,125 @@
-using NonIpFileDelivery.Core;
-using NonIpFileDelivery.Protocols;
 using NonIpFileDelivery.Security;
+using NonIpFileDelivery.Core;
+using NonIpFileDeliveryB.Protocols;
 using Serilog;
-using Microsoft.Extensions.Configuration;
+using System.Net;
 
-namespace NonIpFileDelivery;
+namespace NonIpFileDeliveryB;
 
 /// <summary>
-/// 非IP送受信機B のメインエントリーポイント
-/// FTP/SFTP/PostgreSQL対応版 (サーバー側)
-/// Raw Ethernetから受信し、実際のサーバーに接続する
+/// 非IP送受信機B側アプリケーション（受信側）
+/// Raw Ethernetから受信 → TCP/IPでサーバへ転送
 /// </summary>
 class Program
 {
-    static async Task Main(string[] args)
+    static async Task<int> Main(string[] args)
     {
-        // ロギング初期化
+        // ロガー初期化
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
-            .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
-            .WriteTo.File("logs/non-ip-file-delivery-b-.log",
-                rollingInterval: RollingInterval.Day,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.Console()
+            .WriteTo.File("logs/nonip_b_.log", rollingInterval: RollingInterval.Day)
             .CreateLogger();
-
-        Log.Information("========================================");
-        Log.Information("Non-IP File Delivery System B Starting...");
-        Log.Information("Version: 1.0.0 - PostgreSQL/SFTP Support");
-        Log.Information("Role: Server-side (B) - Receiver");
-        Log.Information("========================================");
 
         try
         {
-            // 設定読み込み
-            var config = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.b.json", optional: true)
-                .AddJsonFile("appsettings.json", optional: false)
-                .Build();
+            Log.Information("=== Non-IP File Delivery B (Receiver) Starting ===");
 
-            var interfaceName = config["Network:InterfaceName"] ?? throw new Exception("InterfaceName not configured");
-            var remoteMac = config["Network:RemoteMacAddress"] ?? throw new Exception("RemoteMacAddress not configured");
-            var yaraRulesPath = config["Security:YaraRulesPath"] ?? "rules/*.yar";
+            // 設定（簡略化 - 実運用では設定ファイルから読み込む）
+            var interfaceName = "eth1";
+            var destinationMac = "00:11:22:33:44:55";
+            var ftpServer = "192.168.2.100";
+            var ftpPort = 21;
+            var sftpServer = "192.168.2.101";
+            var sftpPort = 22;
+            var pgServer = "192.168.2.102";
+            var pgPort = 5432;
 
-            // コンポーネント初期化
-            using var transceiver = new RawEthernetTransceiver(interfaceName, remoteMac);
-            
-            // YARA ルールファイルの検索
-            string[] yaraRules = Array.Empty<string>();
-            try
-            {
-                var yaraPattern = yaraRulesPath.Replace("*.yar", "");
-                if (Directory.Exists(yaraPattern.TrimEnd('/', '\\')))
-                {
-                    yaraRules = Directory.GetFiles(yaraPattern, "*.yar", SearchOption.AllDirectories);
-                }
-                if (yaraRules.Length == 0)
-                {
-                    Log.Warning("No YARA rules found at {YaraRulesPath}, security inspection will be limited", yaraRulesPath);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Failed to load YARA rules from {YaraRulesPath}", yaraRulesPath);
-            }
+            Log.Information("Configuration: Interface={Interface}", interfaceName);
 
-            using var inspector = new SecurityInspector(yaraRules);
-            
-            // プロトコルプロキシ初期化（B側）
-            var proxies = new List<IDisposable>();
+            // 暗号化キー（実運用では安全な場所から読み込む）
+            var cryptoKey = new byte[32]; // 256-bit key
+            // TODO: 実際のキー管理実装（設定ファイル、KMS、環境変数等）
+            using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+            rng.GetBytes(cryptoKey);
 
-            // FTPプロキシ (B側)
-            if (config.GetValue<bool>("Protocols:Ftp:Enabled"))
-            {
-                var ftpProxyB = new FtpProxyB(
-                    transceiver,
-                    inspector,
-                    config["Protocols:Ftp:TargetHost"] ?? "192.168.1.100",
-                    config.GetValue<int>("Protocols:Ftp:TargetPort"));
-                
-                proxies.Add(ftpProxyB);
-                await ftpProxyB.StartAsync();
-                Log.Information("FTP Proxy B enabled");
-            }
+            // CryptoEngine初期化
+            var cryptoEngine = new CryptoEngine(cryptoKey);
 
-            // SFTPプロキシ (B側)
-            if (config.GetValue<bool>("Protocols:Sftp:Enabled"))
-            {
-                var sftpProxyB = new SftpProxyB(
-                    transceiver,
-                    inspector,
-                    config["Protocols:Sftp:TargetHost"] ?? "192.168.1.100",
-                    config.GetValue<int>("Protocols:Sftp:TargetPort"));
-                
-                proxies.Add(sftpProxyB);
-                await sftpProxyB.StartAsync();
-                Log.Information("SFTP Proxy B enabled");
-            }
+            // SecureEthernetTransceiver初期化（受信モード）
+            var transceiver = new SecureEthernetTransceiver(
+                interfaceName: interfaceName,
+                remoteMac: destinationMac,
+                cryptoEngine: cryptoEngine,
+                receiverMode: true  // B側は受信モード
+            );
 
-            // PostgreSQLプロキシ (B側)
-            if (config.GetValue<bool>("Protocols:Postgresql:Enabled"))
-            {
-                var pgProxyB = new PostgreSqlProxyB(
-                    transceiver,
-                    inspector,
-                    config["Protocols:Postgresql:TargetHost"] ?? "192.168.1.100",
-                    config.GetValue<int>("Protocols:Postgresql:TargetPort"));
-                
-                proxies.Add(pgProxyB);
-                await pgProxyB.StartAsync();
-                Log.Information("PostgreSQL Proxy B enabled");
-            }
+            Log.Information("SecureEthernetTransceiver initialized in receiver mode");
 
-            // Raw Ethernet送受信開始
-            transceiver.Start();
+            // セキュリティインスペクター初期化（簡略化）
+            var inspector = new SecurityInspector();
 
-            Log.Information("All services started successfully");
-            Log.Information("Active Protocols: FTP={Ftp}, SFTP={Sftp}, PostgreSQL={Pg}",
-                config.GetValue<bool>("Protocols:Ftp:Enabled"),
-                config.GetValue<bool>("Protocols:Sftp:Enabled"),
-                config.GetValue<bool>("Protocols:Postgresql:Enabled"));
-            Log.Information("Waiting for Raw Ethernet packets from Transceiver A...");
-            Log.Information("Press Ctrl+C to shutdown...");
+            Log.Information("SecurityInspector initialized");
 
-            // シャットダウン待機
+            // プロトコルプロキシB側を初期化
+            var ftpProxyB = new FtpProxyB(
+                transceiver,
+                inspector,
+                targetFtpHost: ftpServer,
+                targetFtpPort: ftpPort
+            );
+
+            var sftpProxyB = new SftpProxyB(
+                transceiver,
+                inspector,
+                targetSftpHost: sftpServer,
+                targetSftpPort: sftpPort
+            );
+
+            var pgProxyB = new PostgreSqlProxyB(
+                transceiver,
+                inspector,
+                targetPgHost: pgServer,
+                targetPgPort: pgPort
+            );
+
+            Log.Information("Protocol proxies initialized");
+
+            // Raw Ethernet受信開始
+            await transceiver.StartReceivingAsync();
+
+            // 各プロトコルプロキシ開始
+            await Task.WhenAll(
+                ftpProxyB.StartAsync(),
+                sftpProxyB.StartAsync(),
+                pgProxyB.StartAsync()
+            );
+
+            Log.Information("All protocol proxies started");
+            Log.Information("=== Non-IP File Delivery B is running ===");
+            Log.Information("Press Ctrl+C to stop");
+
+            // Ctrl+C待機
             var cts = new CancellationTokenSource();
             Console.CancelKeyPress += (s, e) =>
             {
                 e.Cancel = true;
                 cts.Cancel();
-                Log.Information("Shutdown signal received");
+                Log.Information("Shutdown requested");
             };
 
             await Task.Delay(Timeout.Infinite, cts.Token);
 
-            // クリーンアップ
-            foreach (var proxy in proxies)
-            {
-                proxy.Dispose();
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            Log.Information("System shutdown initiated");
+            return 0;
         }
         catch (Exception ex)
         {
-            Log.Fatal(ex, "Fatal error occurred");
-            return;
+            Log.Fatal(ex, "Fatal error in Non-IP File Delivery B");
+            return 1;
         }
         finally
         {
-            Log.Information("Non-IP File Delivery System B stopped");
+            Log.Information("=== Non-IP File Delivery B Stopped ===");
             Log.CloseAndFlush();
         }
     }
