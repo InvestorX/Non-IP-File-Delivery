@@ -141,7 +141,9 @@ public class NonIPFileDeliveryService
         _logger.Debug("Service main loop started");
         
         var lastHeartbeat = DateTime.UtcNow;
+        var lastRetryCheck = DateTime.UtcNow;
         var heartbeatInterval = TimeSpan.FromMilliseconds(_configuration?.Redundancy.HeartbeatInterval ?? 1000);
+        var retryCheckInterval = TimeSpan.FromSeconds(2); // 2秒ごとに再送チェック
 
         try
         {
@@ -154,6 +156,13 @@ public class NonIPFileDeliveryService
                 {
                     await SendHeartbeat();
                     lastHeartbeat = now;
+                }
+
+                // Check for timed out frames and retry
+                if (now - lastRetryCheck >= retryCheckInterval)
+                {
+                    await CheckAndRetryTimedOutFrames();
+                    lastRetryCheck = now;
                 }
 
                 // Check system status
@@ -250,6 +259,14 @@ public class NonIPFileDeliveryService
 
                 case FrameType.Control:
                     await ProcessControlFrame(frame, sourceMac);
+                    break;
+
+                case FrameType.Ack:
+                    await ProcessAckFrame(frame, sourceMac);
+                    break;
+
+                case FrameType.Nack:
+                    await ProcessNackFrame(frame, sourceMac);
                     break;
 
                 default:
@@ -741,13 +758,129 @@ public class NonIPFileDeliveryService
     {
         try
         {
-            var ackData = System.Text.Encoding.UTF8.GetBytes($"ACK:{sequenceNumber}");
-            await _networkService.SendFrame(ackData, destinationMac);
-            _logger.Debug($"Acknowledgment sent for sequence {sequenceNumber} to {destinationMac}");
+            // MACアドレスをパース
+            var destMac = ParseMacAddress(destinationMac);
+            if (destMac == null)
+            {
+                _logger.Error($"Invalid destination MAC address: {destinationMac}");
+                return;
+            }
+
+            // 自分のMACアドレス（仮想的に生成）
+            var sourceMac = new byte[6];
+            Random.Shared.NextBytes(sourceMac);
+            sourceMac[0] = (byte)(sourceMac[0] & 0xFE | 0x02); // Set local bit
+
+            // ACKフレームを作成して送信
+            var ackFrame = _frameService.CreateAckFrame(sourceMac, destMac, sequenceNumber);
+            var serializedFrame = _frameService.SerializeFrame(ackFrame);
+            
+            await _networkService.SendFrame(serializedFrame, destinationMac);
+            _logger.Debug($"ACK sent for sequence {sequenceNumber} to {destinationMac}");
         }
         catch (Exception ex)
         {
             _logger.Error($"Failed to send acknowledgment to {destinationMac}", ex);
+        }
+    }
+
+    private async Task ProcessAckFrame(NonIPFrame frame, string sourceMac)
+    {
+        try
+        {
+            _logger.Debug($"ACK frame received from {sourceMac}, Seq={frame.Header.SequenceNumber}");
+
+            // ACKペイロードから確認対象のシーケンス番号を取得
+            if (frame.Payload.Length >= 2)
+            {
+                var ackedSequenceNumber = BitConverter.ToUInt16(frame.Payload, 0);
+                
+                // FrameServiceのACK処理を呼び出し
+                var processed = _frameService.ProcessAck(ackedSequenceNumber);
+                
+                if (processed)
+                {
+                    _logger.Info($"ACK processed successfully for sequence {ackedSequenceNumber} from {sourceMac}");
+                }
+                else
+                {
+                    _logger.Warning($"ACK received for unknown sequence {ackedSequenceNumber} from {sourceMac}");
+                }
+            }
+            else
+            {
+                _logger.Warning($"Invalid ACK frame payload from {sourceMac} (size: {frame.Payload.Length})");
+            }
+
+            await Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing ACK frame from {sourceMac}", ex);
+        }
+    }
+
+    private async Task ProcessNackFrame(NonIPFrame frame, string sourceMac)
+    {
+        try
+        {
+            _logger.Warning($"NACK frame received from {sourceMac}, Seq={frame.Header.SequenceNumber}");
+
+            // NACKペイロードから再送要求されたシーケンス番号と理由を取得
+            if (frame.Payload.Length >= 2)
+            {
+                using var ms = new System.IO.MemoryStream(frame.Payload);
+                using var reader = new System.IO.BinaryReader(ms);
+                
+                var nackedSequenceNumber = reader.ReadUInt16();
+                var reason = reader.BaseStream.Position < reader.BaseStream.Length 
+                    ? reader.ReadString() 
+                    : "No reason provided";
+                
+                _logger.Warning($"NACK for sequence {nackedSequenceNumber} from {sourceMac}: {reason}");
+                
+                // TODO: 即座に再送を試みる（タイムアウトを待たない）
+                // 現在の実装では、GetTimedOutFrames()によるタイムアウト再送のみ
+                // 将来的には、NACK受信時に即座に再送するロジックを追加
+                
+                _logger.Info($"NACK processed: sequence {nackedSequenceNumber} will be retransmitted on timeout");
+            }
+            else
+            {
+                _logger.Warning($"Invalid NACK frame payload from {sourceMac} (size: {frame.Payload.Length})");
+            }
+
+            await Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing NACK frame from {sourceMac}", ex);
+        }
+    }
+
+    private byte[]? ParseMacAddress(string macAddress)
+    {
+        try
+        {
+            if (macAddress == "FF:FF:FF:FF:FF:FF")
+            {
+                return new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            }
+
+            var parts = macAddress.Split(':');
+            if (parts.Length != 6)
+                return null;
+
+            var mac = new byte[6];
+            for (int i = 0; i < 6; i++)
+            {
+                mac[i] = Convert.ToByte(parts[i], 16);
+            }
+            return mac;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -768,6 +901,51 @@ public class NonIPFileDeliveryService
         catch (Exception ex)
         {
             _logger.Error("Failed to send heartbeat", ex);
+        }
+    }
+
+    private async Task CheckAndRetryTimedOutFrames()
+    {
+        try
+        {
+            // タイムアウトしたフレームを取得
+            var timedOutFrames = _frameService.GetTimedOutFrames();
+            
+            if (timedOutFrames.Count > 0)
+            {
+                _logger.Warning($"Found {timedOutFrames.Count} timed out frames, attempting retransmission");
+                
+                foreach (var frame in timedOutFrames)
+                {
+                    try
+                    {
+                        // フレームを再シリアライズして送信
+                        var serializedFrame = _frameService.SerializeFrame(frame);
+                        var destMac = string.Join(":", frame.Header.DestinationMAC.Select(b => b.ToString("X2")));
+                        
+                        _logger.Info($"Retransmitting frame: Type={frame.Header.Type}, Seq={frame.Header.SequenceNumber} to {destMac}");
+                        
+                        await _networkService.SendFrame(serializedFrame, destMac);
+                        
+                        // 再送したフレームを再度ACK待機キューに登録
+                        _frameService.RegisterPendingAck(frame);
+                        
+                        _logger.Debug($"Frame retransmitted and re-registered: Seq={frame.Header.SequenceNumber}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error($"Failed to retransmit frame Seq={frame.Header.SequenceNumber}", ex);
+                    }
+                }
+                
+                // 統計情報をログ出力
+                var stats = _frameService.GetStatistics();
+                _logger.Debug($"Retry queue statistics: PendingAcks={stats.PendingAcks}, RetryQueueSize={stats.RetryQueueSize}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Error checking and retrying timed out frames", ex);
         }
     }
 
