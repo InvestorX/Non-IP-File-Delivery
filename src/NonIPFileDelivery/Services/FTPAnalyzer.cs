@@ -101,13 +101,13 @@ namespace NonIPFileDelivery.Services
             {
                 _logger.Error($"FTP analysis failed: Text decoding error - {ex.Message}", ex);
                 result.ErrorMessage = "FTP command contains invalid characters";
-                return result;
+                return Task.FromResult(result);
             }
             catch (ArgumentException ex)
             {
                 _logger.Error($"FTP analysis failed: Invalid argument - {ex.Message}", ex);
                 result.ErrorMessage = $"Invalid FTP data format: {ex.Message}";
-                return result;
+                return Task.FromResult(result);
             }
             catch (Exception ex)
             {
