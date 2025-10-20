@@ -196,6 +196,14 @@ public class NetworkService : INetworkService
                 _logger.Debug("Frame marked for encryption");
             }
 
+            // ✅ ACK/NAK統合: データフレームとファイル転送フレームにはACKを要求
+            if (frame.Header.Type == FrameType.Data || 
+                frame.Header.Type == FrameType.FileTransfer)
+            {
+                frame.Header.Flags |= FrameFlags.RequireAck;
+                _logger.Debug($"Frame marked for ACK requirement: Type={frame.Header.Type}, Seq={frame.Header.SequenceNumber}");
+            }
+
             var serializedFrame = _frameService.SerializeFrame(frame);
             
             // QoSサービスが有効な場合はキュー経由で送信
@@ -221,6 +229,13 @@ public class NetworkService : INetworkService
                     _logger.Warning($"Bandwidth limit reached, frame queued: {destinationMac}");
                 }
                 
+                // ✅ ACK/NAK統合: ACK要求フレームを待機キューに登録
+                if (frame.Header.Flags.HasFlag(FrameFlags.RequireAck))
+                {
+                    _frameService.RegisterPendingAck(frame);
+                    _logger.Debug($"Frame registered for ACK (QoS path): Seq={frame.Header.SequenceNumber}");
+                }
+                
                 return true;
             }
             else
@@ -234,6 +249,14 @@ public class NetworkService : INetworkService
                 await Task.Delay(transmissionTime);
                 
                 _logger.Debug($"Frame sent successfully to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                
+                // ✅ ACK/NAK統合: ACK要求フレームを待機キューに登録
+                if (frame.Header.Flags.HasFlag(FrameFlags.RequireAck))
+                {
+                    _frameService.RegisterPendingAck(frame);
+                    _logger.Debug($"Frame registered for ACK (direct path): Seq={frame.Header.SequenceNumber}");
+                }
+                
                 return true;
             }
         }
