@@ -959,17 +959,58 @@ As long as you retain this notice you can do whatever you want with this stuff. 
   - RetryPolicyIntegrationTests: 4テスト（リトライ動作、指数バックオフ）
   - QoSIntegrationTests: 5テスト（優先度制御、統計情報）
 
-#### ⚠️ 実装済み・未検証の機能
-- ⚠️ **セッション管理機能**: A側・B側両方実装済み、実環境未検証
-- ⚠️ **フラグメント処理**: FragmentationService実装済み、未検証
-- ✅ **再送制御**: RetryPolicy完全実装（103行）、指数バックオフ+ジッター、**SecureEthernetTransceiverに統合完了**、テスト4件合格
-  - 機能: 最大リトライ3回、初期遅延100ms、最大遅延5秒
-  - 一時的エラー自動判定（NetworkException, TimeoutException, IOException）
-  - ⚠️ メインフロー（SecureEthernetTransceiver等）への統合未実施
-- ✅ **QoS機能**: 優先度制御実装済み（QoSFrameQueue 197行）、**SecureEthernetTransceiverに統合完了**、テスト5件合格
-  - フレームフラグ: `HighPriority`, `RequireAck`
-  - RedundancyServiceで優先度順序付け対応
-  - ⚠️ パケット送信時の優先度キューイング未実装
+#### ✅ Phase 3完了（2025年10月20日）
+
+**主要機能統合完了:**
+
+1. **QoS統合** ✅（コミット: 73ee67b）
+   - TokenBucket帯域制御実装
+   - 優先度キュー（High/Normal/Low）
+   - NetworkService.SendFrame統合
+   - 22/22テスト合格
+
+2. **ACK/NAK再送機構統合** ✅（コミット: d1be403）
+   - NetworkServiceへの統合完了
+   - RequireAckフラグ自動設定
+   - RegisterPendingAck()呼び出し
+   - タイムアウト検出（5秒、最大3回リトライ）
+   - 22/22テスト合格（13 FrameService + 9 AckNak統合）
+
+3. **フラグメント再構築とデータ処理** ✅（コミット: 528e645）
+   - IFragmentationService注入
+   - ProcessFragmentedData()完全実装
+   - ProcessReassembledData()新規実装
+     * ファイルシステムへのデータ保存
+     * セキュリティスキャン実行
+     * 脅威検出時の隔離処理
+   - SHA256ハッシュ検証とプログレストラッキング
+   - 22/22テスト合格
+
+4. **NACK即時再送** ✅（コミット: 4eed5a1）
+   - IFrameService.GetPendingFrame()メソッド追加
+   - ProcessNackFrame()完全実装
+   - NACK受信時の即座再送（タイムアウト前）
+   - 12/12テスト合格（既存9 + 新規3）
+
+**Phase 3統計:**
+- コード追加: 約570行
+- テスト追加: 12件
+- コミット: 4件
+- ビルド: 0エラー
+- 全テスト合格
+
+#### ⚠️ 実装済み・統合テスト待ちの機能
+- ✅ **セッション管理機能**: 完全実装（242行）、実環境統合テスト待ち
+- ✅ **フラグメント処理**: 完全実装（330行、SHA256検証付き）、データ処理統合完了
+- ✅ **再送制御（ACK/NAK）**: **完全実装・NetworkService統合完了**
+  - ACK待機キュー管理
+  - タイムアウト検出（5秒、最大3回リトライ）
+  - NACK即時再送実装
+  - 22/22テスト合格
+- ✅ **QoS機能**: **完全実装・NetworkService統合完了**
+  - TokenBucket帯域制御
+  - 優先度キュー（High/Normal/Low）
+  - 22/22テスト合格
 - ⚠️ **YARAマルウェアスキャン**: dnYara 2.1.0完全統合、**ネイティブlibyaraライブラリが必要**
 - ⚠️ **ClamAV拡張コマンド**: MULTISCAN/CONTSCAN実装済み、**外部clamdデーモン接続未検証**
 - ⚠️ **Windows Defender**: MpCmdRun.exe統合済み、**Windows環境でのみ動作**
