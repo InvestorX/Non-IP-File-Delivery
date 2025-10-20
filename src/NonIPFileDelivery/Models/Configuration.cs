@@ -9,6 +9,7 @@ public class Configuration
     public SecurityConfig Security { get; set; } = new();
     public PerformanceConfig Performance { get; set; } = new();
     public RedundancyConfig Redundancy { get; set; } = new();
+    public QoSConfig QoS { get; set; } = new();
 }
 
 public class GeneralConfig
@@ -50,4 +51,42 @@ public class RedundancyConfig
     public string? VirtualIP { get; set; }
     public string[]? Nodes { get; set; }
     public string Algorithm { get; set; } = "RoundRobin";
+}
+
+public class QoSConfig
+{
+    /// <summary>
+    /// QoS機能を有効化
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// 最大帯域幅（Mbps）
+    /// </summary>
+    public int MaxBandwidthMbps { get; set; } = 2000;
+
+    /// <summary>
+    /// 高優先度フレームの重み（%）
+    /// </summary>
+    public int HighPriorityWeight { get; set; } = 70;
+
+    /// <summary>
+    /// 通常優先度フレームの重み（%）
+    /// </summary>
+    public int NormalPriorityWeight { get; set; } = 20;
+
+    /// <summary>
+    /// 低優先度フレームの重み（%）
+    /// </summary>
+    public int LowPriorityWeight { get; set; } = 10;
+
+    /// <summary>
+    /// QoSキューの最大サイズ
+    /// </summary>
+    public int MaxQueueSize { get; set; } = 10000;
+
+    /// <summary>
+    /// バースト許容サイズ（バイト）。0の場合は1秒分の帯域幅を使用
+    /// </summary>
+    public long BurstSizeBytes { get; set; } = 0;
 }
