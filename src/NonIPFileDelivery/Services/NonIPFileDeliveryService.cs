@@ -15,6 +15,7 @@ public class NonIPFileDeliveryService
     private readonly IFrameService _frameService;
     private readonly IFileStorageService _fileStorageService;
     private readonly ISessionManager _sessionManager;
+    private readonly IFragmentationService _fragmentationService;
     private readonly IRedundancyService? _redundancyService;
     private readonly IQoSService? _qosService;
     
@@ -32,6 +33,7 @@ public class NonIPFileDeliveryService
         IFrameService frameService,
         IFileStorageService fileStorageService,
         ISessionManager sessionManager,
+        IFragmentationService fragmentationService,
         IRedundancyService? redundancyService = null,
         IQoSService? qosService = null)
     {
@@ -42,6 +44,7 @@ public class NonIPFileDeliveryService
         _frameService = frameService;
         _fileStorageService = fileStorageService;
         _sessionManager = sessionManager;
+        _fragmentationService = fragmentationService;
         _redundancyService = redundancyService;
         _qosService = qosService;
         
@@ -455,7 +458,7 @@ public class NonIPFileDeliveryService
     /// <summary>
     /// フラグメント化されたデータフレームを処理
     /// </summary>
-    private Task ProcessFragmentedData(NonIPFrame frame, SessionInfo session, string sourceMac)
+    private async Task ProcessFragmentedData(NonIPFrame frame, SessionInfo session, string sourceMac)
     {
         try
         {
@@ -463,52 +466,122 @@ public class NonIPFileDeliveryService
             if (fragmentInfo == null)
             {
                 _logger.Warning($"Fragment flags set but no FragmentInfo: SessionId={session.SessionId}");
-                return Task.CompletedTask;
+                return;
             }
 
             _logger.Debug($"Fragment detected: {fragmentInfo.FragmentIndex + 1}/{fragmentInfo.TotalFragments}, SessionId={session.SessionId}");
 
-            // フラグメントデータをバッファリング（実装簡略化のため、ここではログのみ）
-            // 本格的な実装では、IFragmentationServiceを使用してフラグメントを再構築
-            _logger.Info($"Fragment {fragmentInfo.FragmentIndex + 1}/{fragmentInfo.TotalFragments} received for session {session.SessionId}");
-
-            // 最終フラグメントの場合
-            if ((frame.Header.Flags & FrameFlags.FragmentEnd) == FrameFlags.FragmentEnd)
+            // ✅ FragmentationServiceを使用してフラグメントを再構築
+            var reassemblyResult = await _fragmentationService.AddFragmentAsync(frame);
+            
+            if (reassemblyResult != null)
             {
-                _logger.Info($"Final fragment received for session {session.SessionId}, data reconstruction needed");
-                // TODO: フラグメント再構築処理
+                // 全てのフラグメントが揃い、再構築が完了
+                if (reassemblyResult.IsSuccess)
+                {
+                    _logger.Info($"Fragment reassembly completed: GroupId={reassemblyResult.FragmentGroupId}, " +
+                               $"Size={reassemblyResult.ReassembledPayload.Length} bytes, " +
+                               $"Fragments={reassemblyResult.ReceivedFragmentCount}/{reassemblyResult.TotalFragmentCount}, " +
+                               $"Time={reassemblyResult.ReassemblyTimeMs}ms");
+                    
+                    if (!reassemblyResult.IsHashValid)
+                    {
+                        _logger.Warning($"Fragment reassembly hash validation failed: GroupId={reassemblyResult.FragmentGroupId}");
+                        // ハッシュ検証失敗時はセキュリティ検疫へ
+                        await _securityService.QuarantineFile(
+                            $"reassembled_{reassemblyResult.FragmentGroupId}.bin", 
+                            "Fragment hash mismatch");
+                        return;
+                    }
+                    
+                    // 再構築されたデータを処理
+                    await ProcessReassembledData(reassemblyResult.ReassembledPayload, session, sourceMac);
+                }
+                else
+                {
+                    _logger.Error($"Fragment reassembly failed: GroupId={reassemblyResult.FragmentGroupId}, " +
+                                $"Error={reassemblyResult.ErrorMessage}");
+                }
+            }
+            else
+            {
+                // まだ全てのフラグメントが揃っていない
+                var progress = await _fragmentationService.GetFragmentProgressAsync(fragmentInfo.FragmentGroupId);
+                if (progress.HasValue)
+                {
+                    _logger.Debug($"Fragment progress: {progress.Value:P1} " +
+                                $"({fragmentInfo.FragmentIndex + 1}/{fragmentInfo.TotalFragments}), " +
+                                $"GroupId={fragmentInfo.FragmentGroupId}");
+                }
             }
         }
         catch (Exception ex)
         {
             _logger.Error($"Error processing fragmented data: SessionId={session.SessionId}", ex);
         }
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
     /// 完全なデータフレームを処理（上位プロトコルへ転送）
     /// </summary>
-    private Task ProcessCompleteDataFrame(NonIPFrame frame, SessionInfo session, string sourceMac)
+    private async Task ProcessCompleteDataFrame(NonIPFrame frame, SessionInfo session, string sourceMac)
     {
         try
         {
             _logger.Debug($"Processing complete data frame: SessionId={session.SessionId}, Size={frame.Payload.Length} bytes");
 
-            // プロトコルタイプに応じて適切な処理を実行
-            // 実際の実装では、プロトコルプロキシ（FtpProxy、SftpProxy等）へデータを転送
-            _logger.Info($"Data frame ready for protocol handler: SessionId={session.SessionId}, ConnectionId={frame.Header.ConnectionId}");
-
-            // TODO: プロトコルハンドラへのデータ転送実装
-            // 例: await _protocolHandlerRegistry.RouteDataAsync(session, frame.Payload);
+            // ✅ 実際のデータ処理を実装
+            await ProcessReassembledData(frame.Payload, session, sourceMac);
         }
         catch (Exception ex)
         {
             _logger.Error($"Error processing complete data frame: SessionId={session.SessionId}", ex);
         }
+    }
 
-        return Task.CompletedTask;
+    /// <summary>
+    /// 再構築されたデータまたは完全なフレームデータを処理
+    /// </summary>
+    private async Task ProcessReassembledData(byte[] data, SessionInfo session, string sourceMac)
+    {
+        try
+        {
+            _logger.Info($"Processing data: SessionId={session.SessionId}, ConnectionId={session.ConnectionId}, Size={data.Length} bytes");
+
+            // データをファイルとして保存（プロトコルハンドラの代わりに）
+            var fileName = $"data_{session.SessionId:N}_{DateTime.UtcNow:yyyyMMddHHmmss}.bin";
+            var destinationPath = GetDestinationPath(fileName, session.SessionId);
+            
+            await File.WriteAllBytesAsync(destinationPath, data);
+            _logger.Info($"Data saved to file: {destinationPath}");
+
+            // セキュリティスキャンを実施
+            var scanResult = await _securityService.ScanData(data, fileName);
+            
+            if (!scanResult.IsClean)
+            {
+                _logger.Warning($"Security threat detected in received data: {scanResult.ThreatName}");
+                await _securityService.QuarantineFile(destinationPath, $"Threat: {scanResult.ThreatName}");
+                return;
+            }
+
+            _logger.Info($"Data processing completed successfully: {fileName}");
+            
+            // TODO: 将来的な拡張ポイント
+            // プロトコルタイプに応じて適切なハンドラへデータを転送
+            // 例: 
+            // if (session.ProtocolType == ProtocolType.FTP) {
+            //     await _ftpProxy.ForwardDataAsync(session, data);
+            // } else if (session.ProtocolType == ProtocolType.SFTP) {
+            //     await _sftpProxy.ForwardDataAsync(session, data);
+            // } else if (session.ProtocolType == ProtocolType.PostgreSQL) {
+            //     await _postgresqlProxy.ForwardDataAsync(session, data);
+            // }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing reassembled data: SessionId={session.SessionId}", ex);
+        }
     }
 
     private async Task ProcessFileTransferFrame(NonIPFrame frame, string sourceMac)
