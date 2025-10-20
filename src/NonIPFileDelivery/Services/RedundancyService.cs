@@ -8,28 +8,39 @@ using NonIPFileDelivery.Models;
 namespace NonIPFileDelivery.Services;
 
 /// <summary>
-/// 冗長化サービス実装（Active-Standby構成）
+/// 冗長化サービス実装(Active-Standby構成)
 /// </summary>
 public class RedundancyService : IRedundancyService
 {
     private readonly ILoggingService _logger;
     private readonly RedundancyConfig _config;
+    private readonly INetworkService? _networkService;
     private readonly Dictionary<string, NodeInfo> _nodes;
     private readonly List<FailoverEvent> _failoverHistory;
     private NodeState _currentState;
     private Timer? _heartbeatTimer;
     private bool _disposed;
     private readonly object _lockObject = new object();
+    private string _localNodeId = string.Empty;
+    private string _localMacAddress = string.Empty;
 
-    public RedundancyService(ILoggingService logger, RedundancyConfig config)
+    public RedundancyService(ILoggingService logger, RedundancyConfig config, INetworkService? networkService = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _config = config ?? throw new ArgumentNullException(nameof(config));
+        _networkService = networkService;
         _nodes = new Dictionary<string, NodeInfo>();
         _failoverHistory = new List<FailoverEvent>();
         _currentState = NodeState.Initializing;
 
         InitializeNodes();
+        
+        // ネットワークサービスが利用可能な場合、フレーム受信イベントを購読
+        if (_networkService != null)
+        {
+            _networkService.FrameReceived += OnFrameReceived;
+            _logger.Info("RedundancyService: NetworkService integration enabled");
+        }
     }
 
     private void InitializeNodes()
@@ -49,6 +60,8 @@ public class RedundancyService : IRedundancyService
                 };
                 _nodes["primary"] = primaryNode;
                 _currentState = NodeState.Active;
+                _localNodeId = "primary";
+                _localMacAddress = _config.PrimaryNode;
                 _logger.Info($"Initialized primary node: {_config.PrimaryNode}");
             }
 
@@ -64,6 +77,14 @@ public class RedundancyService : IRedundancyService
                     IsHealthy = true
                 };
                 _nodes["standby"] = standbyNode;
+                
+                // Standbyノードの場合、ローカルノードIDを設定
+                if (string.IsNullOrEmpty(_localNodeId))
+                {
+                    _localNodeId = "standby";
+                    _localMacAddress = _config.StandbyNode;
+                }
+                
                 _logger.Info($"Initialized standby node: {_config.StandbyNode}");
             }
 
@@ -119,6 +140,19 @@ public class RedundancyService : IRedundancyService
     {
         try
         {
+            // ハートビートメッセージを送信
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await SendHeartbeatAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"Error in SendHeartbeatAsync: {ex.Message}");
+                }
+            });
+
             lock (_lockObject)
             {
                 var now = DateTime.UtcNow;
@@ -421,7 +455,130 @@ public class RedundancyService : IRedundancyService
         if (_disposed) return;
 
         _heartbeatTimer?.Dispose();
+        
+        // ネットワークサービスのイベント購読を解除
+        if (_networkService != null)
+        {
+            _networkService.FrameReceived -= OnFrameReceived;
+        }
+        
         _disposed = true;
         _logger.Info("RedundancyService disposed");
     }
+
+    #region ノード間通信機能
+
+    /// <summary>
+    /// ハートビートメッセージを送信
+    /// </summary>
+    private async Task SendHeartbeatAsync()
+    {
+        if (_networkService == null || !_networkService.IsInterfaceReady)
+        {
+            _logger.Debug("NetworkService not available for heartbeat transmission");
+            return;
+        }
+
+        try
+        {
+            NodeInfo? localNode;
+            lock (_lockObject)
+            {
+                localNode = _nodes.Values.FirstOrDefault(n => n.NodeId == _localNodeId);
+            }
+
+            if (localNode == null)
+            {
+                _logger.Warning($"Local node '{_localNodeId}' not found in node list");
+                return;
+            }
+
+            // ハートビートメッセージを作成
+            var heartbeat = new HeartbeatMessage
+            {
+                NodeId = _localNodeId,
+                SourceMac = _localMacAddress,
+                Timestamp = DateTime.UtcNow,
+                State = localNode.State,
+                Priority = localNode.Priority,
+                ActiveConnections = localNode.ActiveConnections,
+                MemoryUsageMB = GC.GetTotalMemory(false) / (1024 * 1024),
+                CpuUsagePercent = 0 // TODO: 実装時にCPU使用率を取得
+            };
+
+            // シリアライズして送信
+            var data = heartbeat.Serialize();
+            
+            // ブロードキャストまたは他ノードへ送信
+            var otherNodes = _nodes.Values.Where(n => n.NodeId != _localNodeId).ToList();
+            foreach (var node in otherNodes)
+            {
+                var success = await _networkService.SendFrame(data, node.Address);
+                if (success)
+                {
+                    _logger.Debug($"Heartbeat sent to {node.NodeId} ({node.Address})");
+                }
+                else
+                {
+                    _logger.Warning($"Failed to send heartbeat to {node.NodeId} ({node.Address})");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error sending heartbeat: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// フレーム受信イベントハンドラ（ハートビート受信処理）
+    /// </summary>
+    private void OnFrameReceived(object? sender, FrameReceivedEventArgs e)
+    {
+        // ハートビートメッセージかどうかを確認
+        if (!HeartbeatMessage.IsHeartbeatMessage(e.Data))
+        {
+            return;
+        }
+
+        // ハートビートメッセージをデシリアライズ
+        var heartbeat = HeartbeatMessage.Deserialize(e.Data);
+        if (heartbeat == null)
+        {
+            _logger.Warning("Failed to deserialize heartbeat message");
+            return;
+        }
+
+        // 自分自身からのメッセージは無視
+        if (heartbeat.NodeId == _localNodeId)
+        {
+            return;
+        }
+
+        _logger.Debug($"Received heartbeat from {heartbeat.NodeId} (State: {heartbeat.State})");
+
+        // ハートビート情報をメタデータに変換
+        var metadata = new Dictionary<string, object>
+        {
+            { "Priority", heartbeat.Priority },
+            { "ActiveConnections", heartbeat.ActiveConnections },
+            { "MemoryUsageMB", heartbeat.MemoryUsageMB },
+            { "CpuUsagePercent", heartbeat.CpuUsagePercent }
+        };
+
+        // 非同期で記録処理を実行
+        Task.Run(async () =>
+        {
+            try
+            {
+                await RecordHeartbeatAsync(heartbeat.NodeId, heartbeat.State, metadata);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Error recording heartbeat from {heartbeat.NodeId}: {ex.Message}");
+            }
+        });
+    }
+
+    #endregion
 }

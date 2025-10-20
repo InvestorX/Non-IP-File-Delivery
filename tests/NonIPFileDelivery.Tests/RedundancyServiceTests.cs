@@ -412,5 +412,161 @@ public class RedundancyServiceTests
         primaryRecovered!.RecoveryTime.Should().NotBeNull();
         primaryRecovered.RecoveryTime.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(1));
     }
+
+    #region ハートビートメッセージ通信テスト
+
+    [Fact]
+    public void HeartbeatMessage_Serialize_ShouldReturnValidJson()
+    {
+        // Arrange
+        var message = new HeartbeatMessage
+        {
+            NodeId = "primary",
+            SourceMac = "00:11:22:33:44:55",
+            State = NodeState.Active,
+            Priority = 100,
+            ActiveConnections = 5,
+            MemoryUsageMB = 512,
+            CpuUsagePercent = 25.5
+        };
+
+        // Act
+        var data = message.Serialize();
+
+        // Assert
+        data.Should().NotBeNull();
+        data.Length.Should().BeGreaterThan(0);
+        
+        var json = System.Text.Encoding.UTF8.GetString(data);
+        json.Should().Contain("\"Type\":\"HEARTBEAT\"");
+        json.Should().Contain("\"NodeId\":\"primary\"");
+        json.Should().Contain("\"State\":1"); // NodeState.Active = 1
+    }
+
+    [Fact]
+    public void HeartbeatMessage_Deserialize_ShouldRestoreOriginalMessage()
+    {
+        // Arrange
+        var original = new HeartbeatMessage
+        {
+            NodeId = "standby",
+            SourceMac = "AA:BB:CC:DD:EE:FF",
+            State = NodeState.Standby,
+            Priority = 50,
+            ActiveConnections = 3,
+            MemoryUsageMB = 256,
+            CpuUsagePercent = 15.2
+        };
+        var data = original.Serialize();
+
+        // Act
+        var deserialized = HeartbeatMessage.Deserialize(data);
+
+        // Assert
+        deserialized.Should().NotBeNull();
+        deserialized!.NodeId.Should().Be("standby");
+        deserialized.SourceMac.Should().Be("AA:BB:CC:DD:EE:FF");
+        deserialized.State.Should().Be(NodeState.Standby);
+        deserialized.Priority.Should().Be(50);
+        deserialized.ActiveConnections.Should().Be(3);
+        deserialized.MemoryUsageMB.Should().Be(256);
+        deserialized.CpuUsagePercent.Should().Be(15.2);
+    }
+
+    [Fact]
+    public void HeartbeatMessage_IsHeartbeatMessage_WithValidMessage_ShouldReturnTrue()
+    {
+        // Arrange
+        var message = new HeartbeatMessage
+        {
+            NodeId = "test",
+            SourceMac = "00:00:00:00:00:00",
+            State = NodeState.Active
+        };
+        var data = message.Serialize();
+
+        // Act
+        var result = HeartbeatMessage.IsHeartbeatMessage(data);
+
+        // Assert
+        result.Should().BeTrue();
+    }
+
+    [Fact]
+    public void HeartbeatMessage_IsHeartbeatMessage_WithInvalidData_ShouldReturnFalse()
+    {
+        // Arrange
+        var invalidData = System.Text.Encoding.UTF8.GetBytes("not a heartbeat message");
+
+        // Act
+        var result = HeartbeatMessage.IsHeartbeatMessage(invalidData);
+
+        // Assert
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public void HeartbeatMessage_IsHeartbeatMessage_WithWrongType_ShouldReturnFalse()
+    {
+        // Arrange
+        var wrongMessage = System.Text.Encoding.UTF8.GetBytes("{\"Type\":\"DATA\",\"NodeId\":\"test\"}");
+
+        // Act
+        var result = HeartbeatMessage.IsHeartbeatMessage(wrongMessage);
+
+        // Assert
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RedundancyService_WithNetworkService_ShouldSubscribeToFrameReceived()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "00:11:22:33:44:55",
+            StandbyNode = "AA:BB:CC:DD:EE:FF"
+        };
+        var mockNetworkService = new Mock<INetworkService>();
+        mockNetworkService.Setup(x => x.IsInterfaceReady).Returns(true);
+
+        // Act
+        using var service = new RedundancyService(_mockLogger.Object, config, mockNetworkService.Object);
+        await service.StartAsync();
+
+        // Assert - FrameReceivedイベントハンドラが登録されているか確認
+        mockNetworkService.VerifyAdd(x => x.FrameReceived += It.IsAny<EventHandler<FrameReceivedEventArgs>>(), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendHeartbeat_WhenNetworkServiceReady_ShouldSendToOtherNodes()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "00:11:22:33:44:55",
+            StandbyNode = "AA:BB:CC:DD:EE:FF",
+            HeartbeatInterval = 1000
+        };
+        var mockNetworkService = new Mock<INetworkService>();
+        mockNetworkService.Setup(x => x.IsInterfaceReady).Returns(true);
+        mockNetworkService.Setup(x => x.SendFrame(It.IsAny<byte[]>(), It.IsAny<string>()))
+            .ReturnsAsync(true);
+
+        using var service = new RedundancyService(_mockLogger.Object, config, mockNetworkService.Object);
+        await service.StartAsync();
+
+        // Act - Wait for heartbeat timer to trigger (with a small delay)
+        await Task.Delay(1500);
+
+        // Assert - Verify SendFrame was called at least once
+        mockNetworkService.Verify(
+            x => x.SendFrame(It.IsAny<byte[]>(), It.IsAny<string>()), 
+            Times.AtLeastOnce
+        );
+    }
+
+    #endregion
 }
+
 
