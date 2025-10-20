@@ -15,7 +15,7 @@ namespace NonIpFileDelivery.Protocols;
 /// </summary>
 public class SftpProxy : IDisposable
 {
-    private readonly RawEthernetTransceiver _transceiver;
+    private readonly IRawEthernetTransceiver _transceiver;
     private readonly SecurityInspector _inspector;
     private readonly TcpListener _listener;
     private readonly IPEndPoint _targetSftpServer;
@@ -55,7 +55,7 @@ public class SftpProxy : IDisposable
     /// <param name="targetSftpHost">Windows端末B側のSFTPサーバーホスト</param>
     /// <param name="targetSftpPort">Windows端末B側のSFTPサーバーポート</param>
     public SftpProxy(
-        RawEthernetTransceiver transceiver,
+        IRawEthernetTransceiver transceiver,
         SecurityInspector inspector,
         int listenPort = 22,
         string targetSftpHost = "192.168.1.100",

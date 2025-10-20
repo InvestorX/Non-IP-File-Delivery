@@ -16,7 +16,7 @@ namespace NonIpFileDelivery.Protocols;
 /// </summary>
 public class FtpProxy : IDisposable
 {
-    private readonly RawEthernetTransceiver _transceiver;
+    private readonly IRawEthernetTransceiver _transceiver;
     private readonly SecurityInspector _inspector;
     private readonly TcpListener _listener;
     private readonly IPEndPoint _targetFtpServer;
@@ -43,7 +43,7 @@ public class FtpProxy : IDisposable
     /// <param name="targetFtpHost">Windows端末B側のFTPサーバーホスト</param>
     /// <param name="targetFtpPort">Windows端末B側のFTPサーバーポート</param>
     public FtpProxy(
-        RawEthernetTransceiver transceiver,
+        IRawEthernetTransceiver transceiver,
         SecurityInspector inspector,
         int listenPort = 21,
         string targetFtpHost = "192.168.1.100",
@@ -477,7 +477,7 @@ public class FtpDataChannel : IDisposable
     private readonly FtpDataChannelMode _mode;
     private readonly IPAddress _targetIp;
     private readonly int _targetPort;
-    private readonly RawEthernetTransceiver _transceiver;
+    private readonly IRawEthernetTransceiver _transceiver;
     private readonly SecurityInspector _inspector;
     private readonly CancellationToken _cancellationToken;
     
@@ -494,7 +494,7 @@ public class FtpDataChannel : IDisposable
         FtpDataChannelMode mode,
         IPAddress targetIp,
         int targetPort,
-        RawEthernetTransceiver transceiver,
+        IRawEthernetTransceiver transceiver,
         SecurityInspector inspector,
         CancellationToken cancellationToken)
     {

@@ -15,7 +15,7 @@ namespace NonIpFileDelivery.Protocols;
 /// </summary>
 public class PostgreSqlProxy : IDisposable
 {
-    private readonly RawEthernetTransceiver _transceiver;
+    private readonly IRawEthernetTransceiver _transceiver;
     private readonly SecurityInspector _inspector;
     private readonly TcpListener _listener;
     private readonly IPEndPoint _targetPgServer;
@@ -46,7 +46,7 @@ public class PostgreSqlProxy : IDisposable
     /// <param name="targetPgHost">Windows端末B側のPostgreSQLサーバーホスト</param>
     /// <param name="targetPgPort">Windows端末B側のPostgreSQLサーバーポート</param>
     public PostgreSqlProxy(
-        RawEthernetTransceiver transceiver,
+        IRawEthernetTransceiver transceiver,
         SecurityInspector inspector,
         int listenPort = 5432,
         string targetPgHost = "192.168.1.100",

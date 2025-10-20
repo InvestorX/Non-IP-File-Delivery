@@ -17,7 +17,7 @@ namespace NonIPFileDelivery.Tests;
 /// </summary>
 public class FtpDataChannelTests : IDisposable
 {
-    private readonly Mock<RawEthernetTransceiver> _mockTransceiver;
+    private readonly Mock<IRawEthernetTransceiver> _mockTransceiver;
     private readonly SecurityInspector _inspector;
     private readonly CancellationTokenSource _cts;
 
@@ -30,7 +30,7 @@ public class FtpDataChannelTests : IDisposable
             .CreateLogger();
 
         // モック作成
-        _mockTransceiver = new Mock<RawEthernetTransceiver>("eth0", Mock.Of<ILogger>());
+        _mockTransceiver = new Mock<IRawEthernetTransceiver>();
         _inspector = new SecurityInspector();
         _cts = new CancellationTokenSource();
     }

@@ -20,7 +20,7 @@ public class NetworkService : INetworkService, IDisposable
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _listeningTask;
     private byte[] _localMacAddress = new byte[6];
-    private RawEthernetTransceiver? _rawTransceiver;
+    private IRawEthernetTransceiver? _rawTransceiver;
     private SecureEthernetTransceiver? _secureTransceiver;
     private bool _useRawEthernet;
     private bool _useSecureTransceiver;

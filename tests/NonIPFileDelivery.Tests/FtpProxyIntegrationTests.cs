@@ -17,8 +17,9 @@ namespace NonIPFileDelivery.Tests;
 /// </summary>
 public class FtpProxyIntegrationTests : IDisposable
 {
-    private readonly Mock<RawEthernetTransceiver> _mockTransceiver;
+    private readonly Mock<IRawEthernetTransceiver> _mockTransceiver;
     private readonly SecurityInspector _inspector;
+    private readonly CancellationTokenSource _cts;
 
     public FtpProxyIntegrationTests()
     {
@@ -29,8 +30,9 @@ public class FtpProxyIntegrationTests : IDisposable
             .CreateLogger();
 
         // モック作成
-        _mockTransceiver = new Mock<RawEthernetTransceiver>("eth0", Mock.Of<ILogger>());
+        _mockTransceiver = new Mock<IRawEthernetTransceiver>();
         _inspector = new SecurityInspector();
+        _cts = new CancellationTokenSource();
     }
 
     [Fact(DisplayName = "FTPプロキシ: 制御チャンネル - FTPコマンド転送")]

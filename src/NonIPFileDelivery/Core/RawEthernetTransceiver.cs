@@ -11,7 +11,7 @@ namespace NonIpFileDelivery.Core;
 /// Raw Ethernetフレームの送受信を管理するトランシーバー
 /// 非IPプロトコル通信の基盤層
 /// </summary>
-public class RawEthernetTransceiver : IDisposable
+public class RawEthernetTransceiver : IRawEthernetTransceiver
 {
     private readonly LibPcapLiveDevice _device;
     private readonly PhysicalAddress _localMacAddress;
