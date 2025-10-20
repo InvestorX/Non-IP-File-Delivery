@@ -462,7 +462,7 @@ public class FtpProxy : IDisposable
 /// <summary>
 /// FTPデータチャンネルモード
 /// </summary>
-internal enum FtpDataChannelMode
+public enum FtpDataChannelMode
 {
     Active,  // PORT - クライアントが待ち受け
     Passive  // PASV - サーバーが待ち受け
@@ -471,7 +471,7 @@ internal enum FtpDataChannelMode
 /// <summary>
 /// FTPデータチャンネル管理クラス
 /// </summary>
-internal class FtpDataChannel : IDisposable
+public class FtpDataChannel : IDisposable
 {
     private readonly string _sessionId;
     private readonly FtpDataChannelMode _mode;
