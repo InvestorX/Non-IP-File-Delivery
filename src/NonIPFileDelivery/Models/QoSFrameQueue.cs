@@ -19,12 +19,38 @@ public class QoSFrameQueue : IDisposable
     private const int NORMAL_PRIORITY = 100;
     private const int LOW_PRIORITY = 200;
 
+    /// <summary>
+    /// コンストラクタ
+    /// </summary>
+    /// <param name="queueDepthWarningThreshold">キュー深度の警告閾値（デフォルト: 1000）</param>
+    /// <param name="queueDepthCriticalThreshold">キュー深度の緊急閾値（デフォルト: 5000）</param>
+    public QoSFrameQueue(int queueDepthWarningThreshold = 1000, int queueDepthCriticalThreshold = 5000)
+    {
+        _queueDepthWarningThreshold = queueDepthWarningThreshold;
+        _queueDepthCriticalThreshold = queueDepthCriticalThreshold;
+        Log.Information("QoSFrameQueue initialized with WarningThreshold={Warning}, CriticalThreshold={Critical}",
+            queueDepthWarningThreshold, queueDepthCriticalThreshold);
+    }
+
     // 統計情報
     public long TotalEnqueued { get; private set; }
     public long TotalDequeued { get; private set; }
     public long HighPriorityCount { get; private set; }
     public long NormalPriorityCount { get; private set; }
     public long LowPriorityCount { get; private set; }
+    
+    // パフォーマンスメトリクス
+    private int _peakQueueSize;
+    private DateTime? _lastEnqueueTime;
+    private DateTime? _lastDequeueTime;
+    private readonly List<TimeSpan> _dequeuLatencies = new();
+    private const int MAX_LATENCY_SAMPLES = 1000; // 保持するレイテンシサンプル数
+    
+    // 監視設定
+    private readonly int _queueDepthWarningThreshold;
+    private readonly int _queueDepthCriticalThreshold;
+    private DateTime _lastWarningTime = DateTime.MinValue;
+    private const int WARNING_COOLDOWN_SECONDS = 60; // 警告のクールダウン時間
 
     /// <summary>
     /// 現在のキューサイズを取得
@@ -54,6 +80,7 @@ public class QoSFrameQueue : IDisposable
             var priority = DeterminePriority(frame);
             _priorityQueue.Enqueue(frame, priority);
             TotalEnqueued++;
+            _lastEnqueueTime = DateTime.UtcNow;
 
             // 統計更新
             switch (priority)
@@ -69,8 +96,18 @@ public class QoSFrameQueue : IDisposable
                     break;
             }
 
-            Log.Debug("Frame enqueued with priority {Priority}: Session={SessionId}, Protocol={Protocol}",
-                priority, frame.SessionId, frame.Protocol);
+            // ピークキューサイズ更新
+            if (_priorityQueue.Count > _peakQueueSize)
+            {
+                _peakQueueSize = _priorityQueue.Count;
+                Log.Debug("New peak queue size reached: {PeakSize}", _peakQueueSize);
+            }
+
+            // キュー深度監視
+            CheckQueueDepth(_priorityQueue.Count);
+
+            Log.Debug("Frame enqueued with priority {Priority}: Session={SessionId}, Protocol={Protocol}, CurrentQueueSize={CurrentSize}",
+                priority, frame.SessionId, frame.Protocol, _priorityQueue.Count);
         }
 
         _semaphore.Release();
@@ -86,20 +123,74 @@ public class QoSFrameQueue : IDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(QoSFrameQueue));
 
+        var enqueueTime = DateTime.UtcNow;
         await _semaphore.WaitAsync(cancellationToken);
+        var dequeueTime = DateTime.UtcNow;
 
         lock (_lock)
         {
             if (_priorityQueue.TryDequeue(out var frame, out var priority))
             {
                 TotalDequeued++;
-                Log.Debug("Frame dequeued with priority {Priority}: Session={SessionId}, Protocol={Protocol}",
-                    priority, frame.SessionId, frame.Protocol);
+                _lastDequeueTime = dequeueTime;
+
+                // レイテンシ計測
+                var latency = dequeueTime - enqueueTime;
+                RecordLatency(latency);
+
+                Log.Debug("Frame dequeued with priority {Priority}: Session={SessionId}, Protocol={Protocol}, Latency={Latency}ms, CurrentQueueSize={CurrentSize}",
+                    priority, frame.SessionId, frame.Protocol, latency.TotalMilliseconds, _priorityQueue.Count);
                 return frame;
             }
         }
 
         throw new InvalidOperationException("Queue is empty despite semaphore signal");
+    }
+
+    /// <summary>
+    /// レイテンシを記録（サンプル数制限付き）
+    /// </summary>
+    private void RecordLatency(TimeSpan latency)
+    {
+        lock (_lock)
+        {
+            _dequeuLatencies.Add(latency);
+            
+            // サンプル数が上限を超えたら古いものを削除
+            if (_dequeuLatencies.Count > MAX_LATENCY_SAMPLES)
+            {
+                _dequeuLatencies.RemoveAt(0);
+            }
+        }
+    }
+
+    /// <summary>
+    /// キュー深度をチェックし、閾値を超えた場合は警告ログ出力
+    /// </summary>
+    private void CheckQueueDepth(int currentDepth)
+    {
+        var now = DateTime.UtcNow;
+        
+        // クールダウン期間チェック（連続警告を防ぐ）
+        if ((now - _lastWarningTime).TotalSeconds < WARNING_COOLDOWN_SECONDS)
+            return;
+
+        if (currentDepth >= _queueDepthCriticalThreshold)
+        {
+            Log.Error("CRITICAL: Queue depth reached critical threshold: {CurrentDepth}/{CriticalThreshold}, " +
+                      "HighPriority={HighPriority}, NormalPriority={NormalPriority}, LowPriority={LowPriority}",
+                currentDepth, _queueDepthCriticalThreshold,
+                HighPriorityCount, NormalPriorityCount, LowPriorityCount);
+            _lastWarningTime = now;
+        }
+        else if (currentDepth >= _queueDepthWarningThreshold)
+        {
+            Log.Warning("Queue depth reached warning threshold: {CurrentDepth}/{WarningThreshold}, " +
+                        "HighPriority={HighPriority}, NormalPriority={NormalPriority}, LowPriority={LowPriority}",
+                currentDepth, _queueDepthWarningThreshold,
+                HighPriorityCount, NormalPriorityCount, LowPriorityCount);
+            _lastWarningTime = now;
+        }
     }
 
     /// <summary>
@@ -147,11 +238,51 @@ public class QoSFrameQueue : IDisposable
     {
         lock (_lock)
         {
+            var stats = GetStatistics();
             Log.Information(
                 "QoS Queue Statistics: Enqueued={Enqueued}, Dequeued={Dequeued}, CurrentSize={CurrentSize}, " +
-                "HighPriority={HighPriority}, NormalPriority={NormalPriority}, LowPriority={LowPriority}",
-                TotalEnqueued, TotalDequeued, CurrentQueueSize,
-                HighPriorityCount, NormalPriorityCount, LowPriorityCount);
+                "PeakSize={PeakSize}, HighPriority={HighPriority}, NormalPriority={NormalPriority}, LowPriority={LowPriority}, " +
+                "AvgLatency={AvgLatency}ms, MaxLatency={MaxLatency}ms, MinLatency={MinLatency}ms",
+                TotalEnqueued, TotalDequeued, CurrentQueueSize, stats.PeakQueueSize,
+                HighPriorityCount, NormalPriorityCount, LowPriorityCount,
+                stats.AverageLatencyMs, stats.MaxLatencyMs, stats.MinLatencyMs);
+        }
+    }
+
+    /// <summary>
+    /// 詳細な統計情報を取得
+    /// </summary>
+    /// <returns>統計情報オブジェクト</returns>
+    public QoSStatistics GetStatistics()
+    {
+        lock (_lock)
+        {
+            var avgLatency = _dequeuLatencies.Count > 0
+                ? _dequeuLatencies.Average(l => l.TotalMilliseconds)
+                : 0;
+            var maxLatency = _dequeuLatencies.Count > 0
+                ? _dequeuLatencies.Max(l => l.TotalMilliseconds)
+                : 0;
+            var minLatency = _dequeuLatencies.Count > 0
+                ? _dequeuLatencies.Min(l => l.TotalMilliseconds)
+                : 0;
+
+            return new QoSStatistics
+            {
+                TotalEnqueued = TotalEnqueued,
+                TotalDequeued = TotalDequeued,
+                CurrentQueueSize = CurrentQueueSize,
+                PeakQueueSize = _peakQueueSize,
+                HighPriorityCount = HighPriorityCount,
+                NormalPriorityCount = NormalPriorityCount,
+                LowPriorityCount = LowPriorityCount,
+                AverageLatencyMs = avgLatency,
+                MaxLatencyMs = maxLatency,
+                MinLatencyMs = minLatency,
+                LastEnqueueTime = _lastEnqueueTime,
+                LastDequeueTime = _lastDequeueTime,
+                LatencySampleCount = _dequeuLatencies.Count
+            };
         }
     }
 
@@ -162,6 +293,27 @@ public class QoSFrameQueue : IDisposable
         _disposed = true;
         _semaphore.Dispose();
 
-        Log.Information("QoSFrameQueue disposed");
+        Log.Information("QoSFrameQueue disposed: TotalEnqueued={TotalEnqueued}, TotalDequeued={TotalDequeued}, PeakQueueSize={PeakSize}",
+            TotalEnqueued, TotalDequeued, _peakQueueSize);
     }
+}
+
+/// <summary>
+/// QoSキューの統計情報
+/// </summary>
+public class QoSStatistics
+{
+    public long TotalEnqueued { get; init; }
+    public long TotalDequeued { get; init; }
+    public int CurrentQueueSize { get; init; }
+    public int PeakQueueSize { get; init; }
+    public long HighPriorityCount { get; init; }
+    public long NormalPriorityCount { get; init; }
+    public long LowPriorityCount { get; init; }
+    public double AverageLatencyMs { get; init; }
+    public double MaxLatencyMs { get; init; }
+    public double MinLatencyMs { get; init; }
+    public DateTime? LastEnqueueTime { get; init; }
+    public DateTime? LastDequeueTime { get; init; }
+    public int LatencySampleCount { get; init; }
 }

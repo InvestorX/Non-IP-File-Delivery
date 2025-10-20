@@ -55,24 +55,56 @@ public class SessionManagerB : IDisposable
     /// <param name="client">TCP接続</param>
     public void RegisterSession(string sessionId, TcpClient client)
     {
-        if (string.IsNullOrEmpty(sessionId) || client == null)
+        if (string.IsNullOrEmpty(sessionId))
         {
-            throw new ArgumentNullException(sessionId == null ? nameof(sessionId) : nameof(client));
+            Log.Error("Cannot register session: SessionId is null or empty");
+            throw new ArgumentNullException(nameof(sessionId), "SessionId cannot be null or empty");
+        }
+
+        if (client == null)
+        {
+            Log.Error("Cannot register session {SessionId}: TcpClient is null", sessionId);
+            throw new ArgumentNullException(nameof(client), "TcpClient cannot be null");
+        }
+
+        if (!client.Connected)
+        {
+            Log.Warning("Registering session {SessionId} with disconnected TcpClient", sessionId);
         }
 
         lock (_lock)
         {
+            // 既存セッションの上書き警告
+            if (_sessionToClient.ContainsKey(sessionId))
+            {
+                Log.Warning("Overwriting existing session: SessionId={SessionId}", sessionId);
+                // 古い接続をクリーンアップ
+                if (_sessionToClient.TryRemove(sessionId, out var oldClient))
+                {
+                    _clientToSession.TryRemove(oldClient, out _);
+                    try
+                    {
+                        oldClient?.Close();
+                        oldClient?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Error closing old TCP client for session {SessionId}", sessionId);
+                    }
+                }
+            }
+
             _sessionToClient[sessionId] = client;
             _clientToSession[client] = sessionId;
             _sessionLastActivity[sessionId] = DateTime.UtcNow;
         }
 
-        Log.Debug("Session registered: SessionId={SessionId}, RemoteEndPoint={RemoteEndPoint}",
-            sessionId, client.Client.RemoteEndPoint);
+        Log.Information("Session registered: SessionId={SessionId}, RemoteEndPoint={RemoteEndPoint}, TotalSessions={TotalSessions}",
+            sessionId, client.Client.RemoteEndPoint, _sessionToClient.Count);
     }
 
     /// <summary>
-    /// セッションIDからTCP接続を取得
+    /// セッションIDから対応するTCP接続を取得
     /// </summary>
     /// <param name="sessionId">セッションID</param>
     /// <returns>対応するTcpClient、存在しない場合はnull</returns>
@@ -80,6 +112,7 @@ public class SessionManagerB : IDisposable
     {
         if (string.IsNullOrEmpty(sessionId))
         {
+            Log.Debug("GetClientBySession called with null or empty SessionId");
             return null;
         }
 
@@ -87,9 +120,13 @@ public class SessionManagerB : IDisposable
         {
             // 最終アクティビティ時刻を更新
             _sessionLastActivity[sessionId] = DateTime.UtcNow;
+            var remoteEndPoint = client.Client?.RemoteEndPoint?.ToString() ?? "Unknown";
+            Log.Debug("Retrieved client for session: SessionId={SessionId}, RemoteEndPoint={RemoteEndPoint}, Connected={Connected}",
+                sessionId, remoteEndPoint, client.Connected);
             return client;
         }
 
+        Log.Debug("Session not found: SessionId={SessionId}", sessionId);
         return null;
     }
 
@@ -102,6 +139,7 @@ public class SessionManagerB : IDisposable
     {
         if (client == null)
         {
+            Log.Debug("GetSessionByClient called with null client");
             return null;
         }
 
@@ -109,9 +147,14 @@ public class SessionManagerB : IDisposable
         {
             // 最終アクティビティ時刻を更新
             _sessionLastActivity[sessionId] = DateTime.UtcNow;
+            var remoteEndPoint = client.Client?.RemoteEndPoint?.ToString() ?? "Unknown";
+            Log.Debug("Retrieved session for client: SessionId={SessionId}, RemoteEndPoint={RemoteEndPoint}, Connected={Connected}",
+                sessionId, remoteEndPoint, client.Connected);
             return sessionId;
         }
 
+        var clientEndPoint = client.Client?.RemoteEndPoint?.ToString() ?? "Unknown";
+        Log.Debug("Client not associated with any session: RemoteEndPoint={RemoteEndPoint}", clientEndPoint);
         return null;
     }
 
@@ -123,6 +166,7 @@ public class SessionManagerB : IDisposable
     {
         if (string.IsNullOrEmpty(sessionId))
         {
+            Log.Debug("RemoveSession called with null or empty SessionId");
             return;
         }
 
@@ -131,20 +175,31 @@ public class SessionManagerB : IDisposable
             if (_sessionToClient.TryRemove(sessionId, out var client))
             {
                 _clientToSession.TryRemove(client, out _);
-                _sessionLastActivity.TryRemove(sessionId, out _);
+                _sessionLastActivity.TryRemove(sessionId, out var lastActivity);
 
                 // TCP接続をクローズ
                 try
                 {
-                    client?.Close();
-                    client?.Dispose();
+                    if (client != null)
+                    {
+                        if (client.Connected)
+                        {
+                            client.Close();
+                        }
+                        client.Dispose();
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Log.Warning(ex, "Error closing TCP client for session {SessionId}", sessionId);
+                    Log.Error(ex, "Error closing TCP client for session {SessionId}", sessionId);
                 }
 
-                Log.Debug("Session removed: SessionId={SessionId}", sessionId);
+                Log.Information("Session removed: SessionId={SessionId}, LastActivity={LastActivity}, RemainingActiveSessions={RemainingActiveSessions}",
+                    sessionId, lastActivity, _sessionToClient.Count);
+            }
+            else
+            {
+                Log.Debug("Attempted to remove non-existent session: SessionId={SessionId}", sessionId);
             }
         }
     }
@@ -157,13 +212,22 @@ public class SessionManagerB : IDisposable
     {
         if (client == null)
         {
+            Log.Debug("RemoveSessionByClient called with null client");
             return;
         }
 
         var sessionId = GetSessionByClient(client);
         if (sessionId != null)
         {
+            var remoteEndPoint = client.Client?.RemoteEndPoint?.ToString() ?? "Unknown";
+            Log.Debug("Removing session by client: SessionId={SessionId}, RemoteEndPoint={RemoteEndPoint}",
+                sessionId, remoteEndPoint);
             RemoveSession(sessionId);
+        }
+        else
+        {
+            var remoteEndPoint = client.Client?.RemoteEndPoint?.ToString() ?? "Unknown";
+            Log.Debug("No session found for client: RemoteEndPoint={RemoteEndPoint}", remoteEndPoint);
         }
     }
 
@@ -175,26 +239,40 @@ public class SessionManagerB : IDisposable
         var now = DateTime.UtcNow;
         var expiredSessions = new List<string>();
 
-        // タイムアウトしたセッションを特定
-        foreach (var kvp in _sessionLastActivity)
+        try
         {
-            if (now - kvp.Value > _sessionTimeout)
+            // タイムアウトしたセッションを特定
+            foreach (var kvp in _sessionLastActivity)
             {
-                expiredSessions.Add(kvp.Key);
+                if (now - kvp.Value > _sessionTimeout)
+                {
+                    expiredSessions.Add(kvp.Key);
+                }
+            }
+
+            // 削除
+            foreach (var sessionId in expiredSessions)
+            {
+                var lastActivity = _sessionLastActivity.TryGetValue(sessionId, out var la) ? la : DateTime.MinValue;
+                Log.Information("Session expired due to timeout: SessionId={SessionId}, LastActivity={LastActivity}, IdleTime={IdleTime}",
+                    sessionId, lastActivity, now - lastActivity);
+                RemoveSession(sessionId);
+            }
+
+            if (expiredSessions.Count > 0)
+            {
+                Log.Information("Cleanup completed: {Count} expired sessions removed, {ActiveCount} active sessions remaining",
+                    expiredSessions.Count, _sessionToClient.Count);
+            }
+            else
+            {
+                Log.Debug("Cleanup completed: No expired sessions found, {ActiveCount} active sessions",
+                    _sessionToClient.Count);
             }
         }
-
-        // 削除
-        foreach (var sessionId in expiredSessions)
+        catch (Exception ex)
         {
-            Log.Information("Session expired: SessionId={SessionId}, LastActivity={LastActivity}",
-                sessionId, _sessionLastActivity[sessionId]);
-            RemoveSession(sessionId);
-        }
-
-        if (expiredSessions.Count > 0)
-        {
-            Log.Debug("Cleaned up {Count} expired sessions", expiredSessions.Count);
+            Log.Error(ex, "Error during session cleanup");
         }
     }
 
