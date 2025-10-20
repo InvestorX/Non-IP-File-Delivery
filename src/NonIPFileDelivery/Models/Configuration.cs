@@ -30,6 +30,13 @@ public class NetworkConfig
     /// Raw Ethernet通信に使用。未設定の場合はシミュレーションモード
     /// </summary>
     public string? RemoteMacAddress { get; set; }
+    
+    /// <summary>
+    /// SecureEthernetTransceiver（暗号化対応）を使用するかどうか
+    /// false（デフォルト）: RawEthernetTransceiver使用（軽量・シンプル）
+    /// true: SecureEthernetTransceiver使用（暗号化・認証・リプレイ攻撃対策）
+    /// </summary>
+    public bool UseSecureTransceiver { get; set; } = false;
 }
 
 public class SecurityConfig

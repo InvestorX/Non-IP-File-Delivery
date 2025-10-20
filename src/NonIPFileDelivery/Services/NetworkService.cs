@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NonIPFileDelivery.Models;
 using NonIpFileDelivery.Core;
+using NonIpFileDelivery.Security;
 using PacketDotNet;
 
 namespace NonIPFileDelivery.Services;
@@ -14,21 +15,29 @@ public class NetworkService : INetworkService, IDisposable
     private readonly ILoggingService _logger;
     private readonly IFrameService _frameService;
     private readonly IQoSService? _qosService;
+    private readonly ICryptoService? _cryptoService;
     private NetworkConfig? _config;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _listeningTask;
     private byte[] _localMacAddress = new byte[6];
-    private RawEthernetTransceiver? _transceiver;
+    private RawEthernetTransceiver? _rawTransceiver;
+    private SecureEthernetTransceiver? _secureTransceiver;
     private bool _useRawEthernet;
+    private bool _useSecureTransceiver;
 
     public bool IsInterfaceReady { get; private set; }
     public event EventHandler<FrameReceivedEventArgs>? FrameReceived;
 
-    public NetworkService(ILoggingService logger, IFrameService frameService, IQoSService? qosService = null)
+    public NetworkService(
+        ILoggingService logger, 
+        IFrameService frameService, 
+        IQoSService? qosService = null,
+        ICryptoService? cryptoService = null)
     {
         _logger = logger;
         _frameService = frameService;
         _qosService = qosService;
+        _cryptoService = cryptoService;
         
         // Generate a temporary MAC address for simulation
         Random.Shared.NextBytes(_localMacAddress);
@@ -37,6 +46,11 @@ public class NetworkService : INetworkService, IDisposable
         if (_qosService != null)
         {
             _logger.Info("NetworkService initialized with QoS support");
+        }
+        
+        if (_cryptoService != null)
+        {
+            _logger.Info("NetworkService initialized with CryptoService for SecureEthernetTransceiver");
         }
     }
 
@@ -94,27 +108,68 @@ public class NetworkService : INetworkService, IDisposable
 
             _logger.Info($"Using EtherType: {config.EtherType}");
             
-            // Initialize RawEthernetTransceiver if RemoteMacAddress is configured
+            // Initialize transceiver based on configuration
             _useRawEthernet = !string.IsNullOrEmpty(config.RemoteMacAddress);
+            _useSecureTransceiver = config.UseSecureTransceiver;
             
             if (_useRawEthernet)
             {
-                try
+                if (_useSecureTransceiver)
                 {
-                    _logger.Info($"Initializing RawEthernetTransceiver with remote MAC: {config.RemoteMacAddress}");
-                    _transceiver = new RawEthernetTransceiver(
-                        config.Interface,
-                        config.RemoteMacAddress!,
-                        channelCapacity: 10000
-                    );
-                    _logger.Info("RawEthernetTransceiver initialized successfully - PRODUCTION MODE");
+                    // Initialize SecureEthernetTransceiver (暗号化対応)
+                    try
+                    {
+                        if (_cryptoService == null)
+                        {
+                            _logger.Error("CryptoService is required for SecureEthernetTransceiver but not available");
+                            throw new InvalidOperationException("CryptoService is required for SecureEthernetTransceiver");
+                        }
+                        
+                        _logger.Info($"Initializing SecureEthernetTransceiver with remote MAC: {config.RemoteMacAddress}");
+                        
+                        // Create CryptoEngine with secure password
+                        // TODO: パスワードは設定ファイルから取得すべき
+                        var cryptoEngine = new CryptoEngine("NonIPFileDeliverySecurePassword2025");
+                        
+                        _secureTransceiver = new SecureEthernetTransceiver(
+                            config.Interface,
+                            config.RemoteMacAddress!,
+                            cryptoEngine,
+                            receiverMode: false,
+                            channelCapacity: 10000
+                        );
+                        
+                        _logger.Info("SecureEthernetTransceiver initialized successfully - SECURE PRODUCTION MODE");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error($"Failed to initialize SecureEthernetTransceiver: {ex.Message}");
+                        _logger.Warning("Falling back to simulation mode");
+                        _useRawEthernet = false;
+                        _useSecureTransceiver = false;
+                        _secureTransceiver = null;
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.Error($"Failed to initialize RawEthernetTransceiver: {ex.Message}");
-                    _logger.Warning("Falling back to simulation mode");
-                    _useRawEthernet = false;
-                    _transceiver = null;
+                    // Initialize RawEthernetTransceiver (軽量版)
+                    try
+                    {
+                        _logger.Info($"Initializing RawEthernetTransceiver with remote MAC: {config.RemoteMacAddress}");
+                        _rawTransceiver = new RawEthernetTransceiver(
+                            config.Interface,
+                            config.RemoteMacAddress!,
+                            channelCapacity: 10000
+                        );
+                        _logger.Info("RawEthernetTransceiver initialized successfully - PRODUCTION MODE");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error($"Failed to initialize RawEthernetTransceiver: {ex.Message}");
+                        _logger.Warning("Falling back to simulation mode");
+                        _useRawEthernet = false;
+                        _rawTransceiver = null;
+                    }
                 }
             }
             else
@@ -149,12 +204,28 @@ public class NetworkService : INetworkService, IDisposable
             
             _cancellationTokenSource = new CancellationTokenSource();
             
-            if (_useRawEthernet && _transceiver != null)
+            if (_useRawEthernet)
             {
-                // Production mode: Use RawEthernetTransceiver
-                _logger.Info("Starting RawEthernetTransceiver (PRODUCTION MODE)");
-                _transceiver.Start();
-                _listeningTask = ListenForRawFramesAsync(_cancellationTokenSource.Token);
+                if (_useSecureTransceiver && _secureTransceiver != null)
+                {
+                    // Secure production mode: Use SecureEthernetTransceiver
+                    _logger.Info("Starting SecureEthernetTransceiver (SECURE PRODUCTION MODE)");
+                    _secureTransceiver.Start();
+                    _listeningTask = ListenForSecureFramesAsync(_cancellationTokenSource.Token);
+                }
+                else if (_rawTransceiver != null)
+                {
+                    // Production mode: Use RawEthernetTransceiver
+                    _logger.Info("Starting RawEthernetTransceiver (PRODUCTION MODE)");
+                    _rawTransceiver.Start();
+                    _listeningTask = ListenForRawFramesAsync(_cancellationTokenSource.Token);
+                }
+                else
+                {
+                    // Fallback to simulation
+                    _logger.Info("Starting frame simulation (SIMULATION MODE - transceiver init failed)");
+                    _listeningTask = ListenForFramesAsync(_cancellationTokenSource.Token);
+                }
             }
             else
             {
@@ -214,9 +285,12 @@ public class NetworkService : INetworkService, IDisposable
             StopListening().Wait();
         }
         
-        // Dispose RawEthernetTransceiver
-        _transceiver?.Dispose();
-        _transceiver = null;
+        // Dispose transceivers
+        _rawTransceiver?.Dispose();
+        _rawTransceiver = null;
+        
+        _secureTransceiver?.Dispose();
+        _secureTransceiver = null;
         
         _logger.Info("NetworkService disposed");
     }
@@ -308,11 +382,35 @@ public class NetworkService : INetworkService, IDisposable
                 // QoS無効時は直接送信
                 _logger.Debug($"Sending frame to {destinationMac}, size: {serializedFrame.Length} bytes, type: {frame.Header.Type}, priority: {priority}");
                 
-                if (_useRawEthernet && _transceiver != null)
+                if (_useRawEthernet)
                 {
-                    // Production mode: Send via RawEthernetTransceiver
-                    await _transceiver.SendAsync(serializedFrame, CancellationToken.None);
-                    _logger.Debug($"Frame sent via Raw Ethernet to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                    if (_useSecureTransceiver && _secureTransceiver != null)
+                    {
+                        // Secure production mode: Send via SecureEthernetTransceiver
+                        // Convert NonIPFrame to SecureFrame
+                        var secureFrame = new NonIpFileDelivery.Core.SecureFrame
+                        {
+                            SessionId = Guid.NewGuid(), // TODO: セッション管理と統合
+                            Protocol = MapFrameTypeToProtocol(frame.Header.Type),
+                            Payload = serializedFrame
+                        };
+                        
+                        await _secureTransceiver.SendFrameAsync(secureFrame, CancellationToken.None);
+                        _logger.Debug($"Frame sent via Secure Ethernet to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                    }
+                    else if (_rawTransceiver != null)
+                    {
+                        // Production mode: Send via RawEthernetTransceiver
+                        await _rawTransceiver.SendAsync(serializedFrame, CancellationToken.None);
+                        _logger.Debug($"Frame sent via Raw Ethernet to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                    }
+                    else
+                    {
+                        // Fallback to simulation
+                        var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
+                        await Task.Delay(transmissionTime);
+                        _logger.Debug($"Frame sent (simulated - transceiver init failed) to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                    }
                 }
                 else
                 {
@@ -379,11 +477,28 @@ public class NetworkService : INetworkService, IDisposable
     }
 
     /// <summary>
+    /// NonIPFrame.FrameTypeをSecureFrame.ProtocolTypeにマッピング
+    /// </summary>
+    private NonIpFileDelivery.Core.SecureFrame.ProtocolType MapFrameTypeToProtocol(FrameType frameType)
+    {
+        return frameType switch
+        {
+            FrameType.Data => NonIpFileDelivery.Core.SecureFrame.ProtocolType.FtpData,
+            FrameType.Control => NonIpFileDelivery.Core.SecureFrame.ProtocolType.PostgreSql,
+            FrameType.Ack => NonIpFileDelivery.Core.SecureFrame.ProtocolType.ControlMessage,
+            FrameType.Nack => NonIpFileDelivery.Core.SecureFrame.ProtocolType.ControlMessage,
+            FrameType.FileTransfer => NonIpFileDelivery.Core.SecureFrame.ProtocolType.SftpData,
+            FrameType.Heartbeat => NonIpFileDelivery.Core.SecureFrame.ProtocolType.Heartbeat,
+            _ => NonIpFileDelivery.Core.SecureFrame.ProtocolType.FtpControl
+        };
+    }
+
+    /// <summary>
     /// Raw Ethernetフレーム受信ループ (PRODUCTION MODE)
     /// </summary>
     private async Task ListenForRawFramesAsync(CancellationToken cancellationToken)
     {
-        if (_transceiver == null)
+        if (_rawTransceiver == null)
         {
             _logger.Error("RawEthernetTransceiver is not initialized");
             return;
@@ -398,7 +513,7 @@ public class NetworkService : INetworkService, IDisposable
                 try
                 {
                     // Receive raw Ethernet packet
-                    var ethPacket = await _transceiver.ReceiveAsync(cancellationToken);
+                    var ethPacket = await _rawTransceiver.ReceiveAsync(cancellationToken);
                     
                     // Extract payload (NonIPFrame serialized data)
                     var payloadData = ethPacket.PayloadData;
@@ -440,6 +555,65 @@ public class NetworkService : INetworkService, IDisposable
         }
         
         _logger.Info("Raw Ethernet frame listening loop ended");
+    }
+
+    /// <summary>
+    /// Secure Ethernetフレーム受信ループ (SECURE PRODUCTION MODE)
+    /// </summary>
+    private async Task ListenForSecureFramesAsync(CancellationToken cancellationToken)
+    {
+        if (_secureTransceiver == null)
+        {
+            _logger.Error("SecureEthernetTransceiver is not initialized");
+            return;
+        }
+
+        _logger.Info("Secure Ethernet frame listening loop started (SECURE PRODUCTION MODE)");
+        
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    // Receive secure frame (already decrypted by SecureEthernetTransceiver)
+                    var secureFrame = await _secureTransceiver.ReceiveFrameAsync(cancellationToken);
+                    
+                    // Convert SecureFrame to NonIPFrame
+                    // SecureFrame has: SessionId, Protocol, Payload, SequenceNumber, Timestamp
+                    // We need to map this to NonIPFrame format
+                    
+                    // For now, we'll pass the payload directly to FrameReceived event
+                    // TODO: Implement proper SecureFrame → NonIPFrame conversion
+                    
+                    var sourceMacString = "secure-node"; // SecureFrame doesn't have MAC address
+                    _logger.Debug($"Received secure frame: Protocol={secureFrame.Protocol}, Session={secureFrame.SessionId}, Seq={secureFrame.SequenceNumber}");
+                    
+                    // Fire FrameReceived event with payload
+                    FrameReceived?.Invoke(this, new FrameReceivedEventArgs(secureFrame.Payload, sourceMacString));
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when stopping
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error("Error processing secure frame", ex);
+                    // Continue listening despite errors
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Debug("Secure frame listening cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Fatal error in secure listening loop", ex);
+        }
+        
+        _logger.Info("Secure Ethernet frame listening loop ended");
     }
 
     /// <summary>

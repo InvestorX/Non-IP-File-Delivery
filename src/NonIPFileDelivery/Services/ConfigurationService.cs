@@ -161,7 +161,8 @@ public class ConfigurationService : IConfigurationService
                 FrameSize = int.TryParse(_configuration["Network:FrameSize"], out var fs) ? fs : 9000,
                 Encryption = bool.TryParse(_configuration["Network:Encryption"], out var enc) && enc,
                 EtherType = _configuration["Network:EtherType"] ?? "0x88B5",
-                RemoteMacAddress = _configuration["Network:RemoteMacAddress"]
+                RemoteMacAddress = _configuration["Network:RemoteMacAddress"],
+                UseSecureTransceiver = bool.TryParse(_configuration["Network:UseSecureTransceiver"], out var ust) && ust
             },
             Security = new SecurityConfig
             {
@@ -259,6 +260,7 @@ public class ConfigurationService : IConfigurationService
             {
                 ini.AppendLine($"RemoteMacAddress={config.Network.RemoteMacAddress}");
             }
+            ini.AppendLine($"UseSecureTransceiver={config.Network?.UseSecureTransceiver ?? false}");
             ini.AppendLine();
             
             ini.AppendLine("[Security]");
