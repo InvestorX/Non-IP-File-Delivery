@@ -15,7 +15,9 @@ public class NonIPFileDeliveryService
     private readonly IFrameService _frameService;
     private readonly IFileStorageService _fileStorageService;
     private readonly ISessionManager _sessionManager;
+    private readonly IFragmentationService _fragmentationService;
     private readonly IRedundancyService? _redundancyService;
+    private readonly IQoSService? _qosService;
     
     private Configuration? _configuration;
     private CancellationTokenSource? _cancellationTokenSource;
@@ -31,7 +33,9 @@ public class NonIPFileDeliveryService
         IFrameService frameService,
         IFileStorageService fileStorageService,
         ISessionManager sessionManager,
-        IRedundancyService? redundancyService = null)
+        IFragmentationService fragmentationService,
+        IRedundancyService? redundancyService = null,
+        IQoSService? qosService = null)
     {
         _logger = logger;
         _configService = configService;
@@ -40,7 +44,14 @@ public class NonIPFileDeliveryService
         _frameService = frameService;
         _fileStorageService = fileStorageService;
         _sessionManager = sessionManager;
+        _fragmentationService = fragmentationService;
         _redundancyService = redundancyService;
+        _qosService = qosService;
+        
+        if (_qosService != null)
+        {
+            _logger.Info("NonIPFileDeliveryService initialized with QoS support");
+        }
     }
 
     public async Task<bool> StartAsync(Configuration configuration)
@@ -142,8 +153,10 @@ public class NonIPFileDeliveryService
         
         var lastHeartbeat = DateTime.UtcNow;
         var lastRetryCheck = DateTime.UtcNow;
+        var lastQoSStats = DateTime.UtcNow;
         var heartbeatInterval = TimeSpan.FromMilliseconds(_configuration?.Redundancy.HeartbeatInterval ?? 1000);
         var retryCheckInterval = TimeSpan.FromSeconds(2); // 2秒ごとに再送チェック
+        var qosStatsInterval = TimeSpan.FromSeconds(30); // 30秒ごとにQoS統計
 
         try
         {
@@ -163,6 +176,13 @@ public class NonIPFileDeliveryService
                 {
                     await CheckAndRetryTimedOutFrames();
                     lastRetryCheck = now;
+                }
+
+                // Log QoS statistics if enabled
+                if (_qosService != null && _qosService.IsEnabled && now - lastQoSStats >= qosStatsInterval)
+                {
+                    _qosService.LogStatistics();
+                    lastQoSStats = now;
                 }
 
                 // Check system status
@@ -438,7 +458,7 @@ public class NonIPFileDeliveryService
     /// <summary>
     /// フラグメント化されたデータフレームを処理
     /// </summary>
-    private Task ProcessFragmentedData(NonIPFrame frame, SessionInfo session, string sourceMac)
+    private async Task ProcessFragmentedData(NonIPFrame frame, SessionInfo session, string sourceMac)
     {
         try
         {
@@ -446,52 +466,122 @@ public class NonIPFileDeliveryService
             if (fragmentInfo == null)
             {
                 _logger.Warning($"Fragment flags set but no FragmentInfo: SessionId={session.SessionId}");
-                return Task.CompletedTask;
+                return;
             }
 
             _logger.Debug($"Fragment detected: {fragmentInfo.FragmentIndex + 1}/{fragmentInfo.TotalFragments}, SessionId={session.SessionId}");
 
-            // フラグメントデータをバッファリング（実装簡略化のため、ここではログのみ）
-            // 本格的な実装では、IFragmentationServiceを使用してフラグメントを再構築
-            _logger.Info($"Fragment {fragmentInfo.FragmentIndex + 1}/{fragmentInfo.TotalFragments} received for session {session.SessionId}");
-
-            // 最終フラグメントの場合
-            if ((frame.Header.Flags & FrameFlags.FragmentEnd) == FrameFlags.FragmentEnd)
+            // ✅ FragmentationServiceを使用してフラグメントを再構築
+            var reassemblyResult = await _fragmentationService.AddFragmentAsync(frame);
+            
+            if (reassemblyResult != null)
             {
-                _logger.Info($"Final fragment received for session {session.SessionId}, data reconstruction needed");
-                // TODO: フラグメント再構築処理
+                // 全てのフラグメントが揃い、再構築が完了
+                if (reassemblyResult.IsSuccess)
+                {
+                    _logger.Info($"Fragment reassembly completed: GroupId={reassemblyResult.FragmentGroupId}, " +
+                               $"Size={reassemblyResult.ReassembledPayload.Length} bytes, " +
+                               $"Fragments={reassemblyResult.ReceivedFragmentCount}/{reassemblyResult.TotalFragmentCount}, " +
+                               $"Time={reassemblyResult.ReassemblyTimeMs}ms");
+                    
+                    if (!reassemblyResult.IsHashValid)
+                    {
+                        _logger.Warning($"Fragment reassembly hash validation failed: GroupId={reassemblyResult.FragmentGroupId}");
+                        // ハッシュ検証失敗時はセキュリティ検疫へ
+                        await _securityService.QuarantineFile(
+                            $"reassembled_{reassemblyResult.FragmentGroupId}.bin", 
+                            "Fragment hash mismatch");
+                        return;
+                    }
+                    
+                    // 再構築されたデータを処理
+                    await ProcessReassembledData(reassemblyResult.ReassembledPayload, session, sourceMac);
+                }
+                else
+                {
+                    _logger.Error($"Fragment reassembly failed: GroupId={reassemblyResult.FragmentGroupId}, " +
+                                $"Error={reassemblyResult.ErrorMessage}");
+                }
+            }
+            else
+            {
+                // まだ全てのフラグメントが揃っていない
+                var progress = await _fragmentationService.GetFragmentProgressAsync(fragmentInfo.FragmentGroupId);
+                if (progress.HasValue)
+                {
+                    _logger.Debug($"Fragment progress: {progress.Value:P1} " +
+                                $"({fragmentInfo.FragmentIndex + 1}/{fragmentInfo.TotalFragments}), " +
+                                $"GroupId={fragmentInfo.FragmentGroupId}");
+                }
             }
         }
         catch (Exception ex)
         {
             _logger.Error($"Error processing fragmented data: SessionId={session.SessionId}", ex);
         }
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
     /// 完全なデータフレームを処理（上位プロトコルへ転送）
     /// </summary>
-    private Task ProcessCompleteDataFrame(NonIPFrame frame, SessionInfo session, string sourceMac)
+    private async Task ProcessCompleteDataFrame(NonIPFrame frame, SessionInfo session, string sourceMac)
     {
         try
         {
             _logger.Debug($"Processing complete data frame: SessionId={session.SessionId}, Size={frame.Payload.Length} bytes");
 
-            // プロトコルタイプに応じて適切な処理を実行
-            // 実際の実装では、プロトコルプロキシ（FtpProxy、SftpProxy等）へデータを転送
-            _logger.Info($"Data frame ready for protocol handler: SessionId={session.SessionId}, ConnectionId={frame.Header.ConnectionId}");
-
-            // TODO: プロトコルハンドラへのデータ転送実装
-            // 例: await _protocolHandlerRegistry.RouteDataAsync(session, frame.Payload);
+            // ✅ 実際のデータ処理を実装
+            await ProcessReassembledData(frame.Payload, session, sourceMac);
         }
         catch (Exception ex)
         {
             _logger.Error($"Error processing complete data frame: SessionId={session.SessionId}", ex);
         }
+    }
 
-        return Task.CompletedTask;
+    /// <summary>
+    /// 再構築されたデータまたは完全なフレームデータを処理
+    /// </summary>
+    private async Task ProcessReassembledData(byte[] data, SessionInfo session, string sourceMac)
+    {
+        try
+        {
+            _logger.Info($"Processing data: SessionId={session.SessionId}, ConnectionId={session.ConnectionId}, Size={data.Length} bytes");
+
+            // データをファイルとして保存（プロトコルハンドラの代わりに）
+            var fileName = $"data_{session.SessionId:N}_{DateTime.UtcNow:yyyyMMddHHmmss}.bin";
+            var destinationPath = GetDestinationPath(fileName, session.SessionId);
+            
+            await File.WriteAllBytesAsync(destinationPath, data);
+            _logger.Info($"Data saved to file: {destinationPath}");
+
+            // セキュリティスキャンを実施
+            var scanResult = await _securityService.ScanData(data, fileName);
+            
+            if (!scanResult.IsClean)
+            {
+                _logger.Warning($"Security threat detected in received data: {scanResult.ThreatName}");
+                await _securityService.QuarantineFile(destinationPath, $"Threat: {scanResult.ThreatName}");
+                return;
+            }
+
+            _logger.Info($"Data processing completed successfully: {fileName}");
+            
+            // TODO: 将来的な拡張ポイント
+            // プロトコルタイプに応じて適切なハンドラへデータを転送
+            // 例: 
+            // if (session.ProtocolType == ProtocolType.FTP) {
+            //     await _ftpProxy.ForwardDataAsync(session, data);
+            // } else if (session.ProtocolType == ProtocolType.SFTP) {
+            //     await _sftpProxy.ForwardDataAsync(session, data);
+            // } else if (session.ProtocolType == ProtocolType.PostgreSQL) {
+            //     await _postgresqlProxy.ForwardDataAsync(session, data);
+            // }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error processing reassembled data: SessionId={session.SessionId}", ex);
+        }
     }
 
     private async Task ProcessFileTransferFrame(NonIPFrame frame, string sourceMac)
@@ -839,11 +929,42 @@ public class NonIPFileDeliveryService
                 
                 _logger.Warning($"NACK for sequence {nackedSequenceNumber} from {sourceMac}: {reason}");
                 
-                // TODO: 即座に再送を試みる（タイムアウトを待たない）
-                // 現在の実装では、GetTimedOutFrames()によるタイムアウト再送のみ
-                // 将来的には、NACK受信時に即座に再送するロジックを追加
-                
-                _logger.Info($"NACK processed: sequence {nackedSequenceNumber} will be retransmitted on timeout");
+                // ✅ NACK即時再送: タイムアウトを待たずに即座に再送を試みる
+                var pendingFrame = _frameService.GetPendingFrame(nackedSequenceNumber);
+                if (pendingFrame != null)
+                {
+                    _logger.Info($"Attempting immediate retransmission for sequence {nackedSequenceNumber} due to NACK");
+                    
+                    try
+                    {
+                        // フレームをシリアライズ
+                        var frameData = _frameService.SerializeFrame(pendingFrame);
+                        
+                        // 送信先MACアドレスを取得（NACKの送信元 = 元の送信先）
+                        var destinationMac = sourceMac;
+                        
+                        // NetworkServiceを使用して再送
+                        var sent = await _networkService.SendFrame(frameData, destinationMac);
+                        
+                        if (sent)
+                        {
+                            _logger.Info($"Frame {nackedSequenceNumber} retransmitted immediately in response to NACK");
+                        }
+                        else
+                        {
+                            _logger.Warning($"Immediate retransmission failed for sequence {nackedSequenceNumber}");
+                        }
+                    }
+                    catch (Exception retryEx)
+                    {
+                        _logger.Error($"Immediate retransmission failed for sequence {nackedSequenceNumber}: {retryEx.Message}", retryEx);
+                        _logger.Info($"Frame {nackedSequenceNumber} will be retransmitted on timeout");
+                    }
+                }
+                else
+                {
+                    _logger.Warning($"No pending frame found for NACK sequence {nackedSequenceNumber}. May have already been ACKed or timed out.");
+                }
             }
             else
             {
@@ -893,8 +1014,8 @@ public class NonIPFileDeliveryService
             // Send heartbeat frame to peer systems for redundancy monitoring
             var heartbeatData = System.Text.Encoding.UTF8.GetBytes($"HEARTBEAT:{DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ}");
             
-            // Broadcast to all peers
-            await _networkService.SendFrame(heartbeatData, "FF:FF:FF:FF:FF:FF");
+            // Broadcast to all peers with high priority (heartbeat is critical)
+            await _networkService.SendFrame(heartbeatData, "FF:FF:FF:FF:FF:FF", FramePriority.High);
             
             _logger.Debug("Heartbeat sent");
         }

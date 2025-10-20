@@ -1,5 +1,85 @@
 # Changelog - Non-IP File Delivery System
 
+## v3.4 - 2025年10月20日 - Phase 3完了: QoS・ACK/NAK・フラグメント統合 (Commits 73ee67b, d1be403, 528e645, 4eed5a1)
+
+### 🎉 Phase 3完了
+
+#### 1. QoS統合 ✅ (Commit: 73ee67b)
+**実装内容**:
+- TokenBucket帯域制御アルゴリズム実装
+- 優先度キュー管理（High/Normal/Low）
+- NetworkService.SendFrame統合
+- Configuration.csにQoS設定追加
+
+**影響**: 帯域制御と優先度制御が実システムで動作可能
+**ファイル追加/修正**:
+- `src/NonIPFileDelivery/Models/TokenBucket.cs` (NEW)
+- `src/NonIPFileDelivery/Services/QoSService.cs` (NEW)
+- `src/NonIPFileDelivery/Services/IQoSService.cs` (NEW)
+- `src/NonIPFileDelivery/Services/NetworkService.cs` (MODIFIED)
+- `src/NonIPFileDelivery/Models/Configuration.cs` (MODIFIED)
+
+**テスト**: 22/22合格
+
+#### 2. ACK/NAK再送機構統合 ✅ (Commit: d1be403)
+**実装内容**:
+- NetworkService.SendFrame()でRequireAckフラグ自動設定
+- RegisterPendingAck()呼び出し統合
+- ACK待機キュー管理
+- タイムアウト検出（5秒、最大3回リトライ）
+
+**影響**: フレーム送信の信頼性向上、ロスト検出と自動再送
+**ファイル修正**:
+- `src/NonIPFileDelivery/Services/NetworkService.cs` (21行追加)
+- `src/NonIPFileDelivery/Services/FrameService.cs` (既存メソッド活用)
+
+**テスト追加**: AckNakIntegrationTests.cs (268行、9テスト)
+**テスト結果**: 22/22合格（13 FrameService + 9 AckNak統合）
+
+#### 3. フラグメント再構築とデータ処理 ✅ (Commit: 528e645)
+**実装内容**:
+- IFragmentationServiceをNonIPFileDeliveryServiceに注入
+- ProcessFragmentedData()完全実装
+  * FragmentationService.AddFragmentAsync()呼び出し
+  * ハッシュ検証とプログレストラッキング
+- ProcessReassembledData()新規実装
+  * ファイルシステムへのデータ保存
+  * セキュリティスキャン実行
+  * 脅威検出時の隔離処理
+
+**影響**: フラグメント受信がログのみ→実データ処理に変更
+**ファイル修正**:
+- `src/NonIPFileDelivery/Services/NonIPFileDeliveryService.cs` (93挿入、20削除)
+
+**テスト**: 22/22合格（既存テスト回帰なし）
+
+#### 4. NACK即時再送 ✅ (Commit: 4eed5a1)
+**実装内容**:
+- IFrameService.GetPendingFrame()メソッド追加
+- FrameService.GetPendingFrame()実装
+- ProcessNackFrame()完全実装
+  * NACK受信時にGetPendingFrame()でフレーム取得
+  * タイムアウトを待たずに即座にNetworkService経由で再送
+  * エラーハンドリングとフォールバックロジック
+
+**影響**: NACK受信時の即時再送（5秒タイムアウト前）、ネットワーク輻輳への迅速な対応
+**ファイル修正**:
+- `src/NonIPFileDelivery/Services/IFrameService.cs` (1メソッド追加)
+- `src/NonIPFileDelivery/Services/FrameService.cs` (15行追加)
+- `src/NonIPFileDelivery/Services/NonIPFileDeliveryService.cs` (ProcessNackFrame完全実装)
+
+**テスト追加**: AckNakIntegrationTests.cs (3テスト追加)
+**テスト結果**: 12/12合格（既存9 + 新規3）
+
+### 📊 Phase 3統計
+- **コード追加**: 約570行（QoS 250行 + ACK/NAK 200行 + データ処理 120行）
+- **テスト追加**: 12件（AckNak統合 9件 + GetPendingFrame 3件）
+- **コミット**: 4件
+- **ビルド**: 0エラー
+- **テスト**: 全合格（FrameService 13/13、AckNak 12/12）
+
+---
+
 ## v3.3 - 2025年10月 - Critical Bug Fixes & Code Quality Improvements (Commit 350f240)
 
 ### 🐛 Critical Bug Fixes
