@@ -16,6 +16,7 @@ public class NonIPFileDeliveryService
     private readonly IFileStorageService _fileStorageService;
     private readonly ISessionManager _sessionManager;
     private readonly IRedundancyService? _redundancyService;
+    private readonly IQoSService? _qosService;
     
     private Configuration? _configuration;
     private CancellationTokenSource? _cancellationTokenSource;
@@ -31,7 +32,8 @@ public class NonIPFileDeliveryService
         IFrameService frameService,
         IFileStorageService fileStorageService,
         ISessionManager sessionManager,
-        IRedundancyService? redundancyService = null)
+        IRedundancyService? redundancyService = null,
+        IQoSService? qosService = null)
     {
         _logger = logger;
         _configService = configService;
@@ -41,6 +43,12 @@ public class NonIPFileDeliveryService
         _fileStorageService = fileStorageService;
         _sessionManager = sessionManager;
         _redundancyService = redundancyService;
+        _qosService = qosService;
+        
+        if (_qosService != null)
+        {
+            _logger.Info("NonIPFileDeliveryService initialized with QoS support");
+        }
     }
 
     public async Task<bool> StartAsync(Configuration configuration)
@@ -142,8 +150,10 @@ public class NonIPFileDeliveryService
         
         var lastHeartbeat = DateTime.UtcNow;
         var lastRetryCheck = DateTime.UtcNow;
+        var lastQoSStats = DateTime.UtcNow;
         var heartbeatInterval = TimeSpan.FromMilliseconds(_configuration?.Redundancy.HeartbeatInterval ?? 1000);
         var retryCheckInterval = TimeSpan.FromSeconds(2); // 2秒ごとに再送チェック
+        var qosStatsInterval = TimeSpan.FromSeconds(30); // 30秒ごとにQoS統計
 
         try
         {
@@ -163,6 +173,13 @@ public class NonIPFileDeliveryService
                 {
                     await CheckAndRetryTimedOutFrames();
                     lastRetryCheck = now;
+                }
+
+                // Log QoS statistics if enabled
+                if (_qosService != null && _qosService.IsEnabled && now - lastQoSStats >= qosStatsInterval)
+                {
+                    _qosService.LogStatistics();
+                    lastQoSStats = now;
                 }
 
                 // Check system status
@@ -893,8 +910,8 @@ public class NonIPFileDeliveryService
             // Send heartbeat frame to peer systems for redundancy monitoring
             var heartbeatData = System.Text.Encoding.UTF8.GetBytes($"HEARTBEAT:{DateTime.UtcNow:yyyy-MM-ddTHH:mm:ss.fffZ}");
             
-            // Broadcast to all peers
-            await _networkService.SendFrame(heartbeatData, "FF:FF:FF:FF:FF:FF");
+            // Broadcast to all peers with high priority (heartbeat is critical)
+            await _networkService.SendFrame(heartbeatData, "FF:FF:FF:FF:FF:FF", FramePriority.High);
             
             _logger.Debug("Heartbeat sent");
         }

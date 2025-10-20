@@ -11,6 +11,7 @@ public class NetworkService : INetworkService
 {
     private readonly ILoggingService _logger;
     private readonly IFrameService _frameService;
+    private readonly IQoSService? _qosService;
     private NetworkConfig? _config;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _listeningTask;
@@ -19,14 +20,20 @@ public class NetworkService : INetworkService
     public bool IsInterfaceReady { get; private set; }
     public event EventHandler<FrameReceivedEventArgs>? FrameReceived;
 
-    public NetworkService(ILoggingService logger, IFrameService frameService)
+    public NetworkService(ILoggingService logger, IFrameService frameService, IQoSService? qosService = null)
     {
         _logger = logger;
         _frameService = frameService;
+        _qosService = qosService;
         
         // Generate a temporary MAC address for simulation
         Random.Shared.NextBytes(_localMacAddress);
         _localMacAddress[0] = (byte)(_localMacAddress[0] & 0xFE | 0x02); // Set local bit, clear multicast bit
+        
+        if (_qosService != null)
+        {
+            _logger.Info("NetworkService initialized with QoS support");
+        }
     }
 
     public Task<bool> InitializeInterface(NetworkConfig config)
@@ -151,6 +158,12 @@ public class NetworkService : INetworkService
 
     public async Task<bool> SendFrame(byte[] data, string destinationMac)
     {
+        // デフォルトは通常優先度で送信
+        return await SendFrame(data, destinationMac, FramePriority.Normal);
+    }
+
+    public async Task<bool> SendFrame(byte[] data, string destinationMac, FramePriority priority)
+    {
         if (!IsInterfaceReady || _config == null)
         {
             _logger.Error("Cannot send frame - interface not ready");
@@ -170,6 +183,12 @@ public class NetworkService : INetworkService
             // Create and serialize frame
             var frame = _frameService.CreateDataFrame(_localMacAddress, destMac, data);
             
+            // 優先度に応じてフラグを設定
+            if (priority == FramePriority.High)
+            {
+                frame.Header.Flags |= FrameFlags.Priority;
+            }
+            
             if (_config.Encryption)
             {
                 frame.Header.Flags |= FrameFlags.Encrypted;
@@ -179,15 +198,44 @@ public class NetworkService : INetworkService
 
             var serializedFrame = _frameService.SerializeFrame(frame);
             
-            _logger.Debug($"Sending frame to {destinationMac}, size: {serializedFrame.Length} bytes, type: {frame.Header.Type}");
-            
-            // Simulate raw socket transmission with realistic network timing
-            // In production, this would interface with RawEthernetTransceiver or libpcap
-            var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
-            await Task.Delay(transmissionTime);
-            
-            _logger.Debug($"Frame sent successfully to {destinationMac} (seq: {frame.Header.SequenceNumber})");
-            return true;
+            // QoSサービスが有効な場合はキュー経由で送信
+            if (_qosService != null && _qosService.IsEnabled)
+            {
+                _logger.Debug($"Enqueueing frame via QoS: destination={destinationMac}, size={serializedFrame.Length} bytes, priority={priority}");
+                
+                // 優先度に応じてフラグを設定
+                FrameFlags? qosPriority = priority switch
+                {
+                    FramePriority.High => FrameFlags.Priority,
+                    FramePriority.Low => null, // 低優先度は特にフラグなし
+                    _ => null
+                };
+                
+                await _qosService.EnqueueFrameAsync(frame, qosPriority);
+                
+                // QoS経由の場合、実際の送信はバックグラウンドタスクが行う
+                // ここでは帯域制限チェックのみ実施
+                var canSend = await _qosService.TryConsumeAsync(serializedFrame.Length);
+                if (!canSend)
+                {
+                    _logger.Warning($"Bandwidth limit reached, frame queued: {destinationMac}");
+                }
+                
+                return true;
+            }
+            else
+            {
+                // QoS無効時は直接送信
+                _logger.Debug($"Sending frame to {destinationMac}, size: {serializedFrame.Length} bytes, type: {frame.Header.Type}, priority: {priority}");
+                
+                // Simulate raw socket transmission with realistic network timing
+                // In production, this would interface with RawEthernetTransceiver or libpcap
+                var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
+                await Task.Delay(transmissionTime);
+                
+                _logger.Debug($"Frame sent successfully to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                return true;
+            }
         }
         catch (Exception ex)
         {

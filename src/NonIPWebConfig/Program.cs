@@ -59,6 +59,12 @@ builder.Services.AddSingleton<NonIPWebConfig.Services.ConfigurationService>();
 builder.Services.AddSingleton<NonIPWebConfig.Services.ConfigValidationService>();
 builder.Services.AddSingleton<IAuthService, AuthService>();
 
+// NonIPFileDelivery サービス（QoS含む）
+builder.Services.AddSingleton<ILoggingService, LoggingService>();
+builder.Services.AddSingleton<IQoSService, QoSService>();
+builder.Services.AddSingleton<IFrameService, FrameService>();
+builder.Services.AddSingleton<INetworkService, NetworkService>();
+
 var app = builder.Build();
 
 // 初期管理者アカウントの作成
