@@ -51,6 +51,17 @@ public class RedundancyConfig
     public string? VirtualIP { get; set; }
     public string[]? Nodes { get; set; }
     public string Algorithm { get; set; } = "RoundRobin";
+    
+    /// <summary>
+    /// 自動フェイルバックを有効化（プライマリノード回復時に自動的に戻す）
+    /// </summary>
+    public bool EnableAutoFailback { get; set; } = false;
+    
+    /// <summary>
+    /// フェイルバック前の待機時間（ミリ秒）
+    /// ノードが安定していることを確認するための猶予期間
+    /// </summary>
+    public int FailbackDelay { get; set; } = 30000; // 30秒
 }
 
 public class QoSConfig

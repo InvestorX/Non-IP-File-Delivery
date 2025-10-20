@@ -122,35 +122,116 @@ public class RedundancyService : IRedundancyService
             lock (_lockObject)
             {
                 var now = DateTime.UtcNow;
+                var activeNode = _nodes.Values.FirstOrDefault(n => n.State == NodeState.Active);
+                var failedNodes = new List<NodeInfo>();
 
+                // 全ノードのハートビートチェック
                 foreach (var node in _nodes.Values)
                 {
-                    // タイムアウトチェック
                     var timeSinceLastHeartbeat = (now - node.LastHeartbeat).TotalMilliseconds;
+                    
                     if (timeSinceLastHeartbeat > _config.FailoverTimeout)
                     {
+                        // タイムアウト検出
                         if (node.IsHealthy)
                         {
-                            _logger.Warning($"Node {node.NodeId} heartbeat timeout ({timeSinceLastHeartbeat}ms)");
+                            _logger.Warning($"Node {node.NodeId} heartbeat timeout ({timeSinceLastHeartbeat:F0}ms > {_config.FailoverTimeout}ms)");
                             node.IsHealthy = false;
-                            node.State = NodeState.Failed;
-
-                            // Activeノードが失敗した場合、フェイルオーバーを実行
-                            if (node.State == NodeState.Active || _currentState == NodeState.Active)
+                            
+                            // Activeノードの場合は即座にFailedに
+                            if (node.State == NodeState.Active)
                             {
-                                _ = Task.Run(() => PerformFailoverAsync($"Heartbeat timeout for {node.NodeId}"));
+                                node.State = NodeState.Failed;
+                                failedNodes.Add(node);
+                                _logger.Error($"Active node {node.NodeId} has failed - triggering failover");
                             }
                         }
                     }
+                    else
+                    {
+                        // ハートビートが正常
+                        if (!node.IsHealthy && node.State == NodeState.Failed)
+                        {
+                            // ノード回復検出
+                            _logger.Info($"Node {node.NodeId} has recovered (heartbeat received)");
+                            node.IsHealthy = true;
+                            node.RecoveryTime = now;
+                            
+                            // プライマリノードが回復した場合、自動フェイルバックを検討
+                            if (_config.EnableAutoFailback && node.NodeId == "primary" && activeNode?.NodeId != "primary")
+                            {
+                                CheckAndPerformFailback(node, now);
+                            }
+                        }
+                    }
+                }
 
-                    // 自ノードのハートビート更新
-                    node.LastHeartbeat = now;
+                // Activeノードが失敗した場合、フェイルオーバー実行
+                if (activeNode != null && failedNodes.Any(n => n.NodeId == activeNode.NodeId))
+                {
+                    _ = Task.Run(() => PerformFailoverAsync($"Heartbeat timeout for active node {activeNode.NodeId}"));
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.Error($"Error in heartbeat callback: {ex.Message}");
+            _logger.Error($"Error in heartbeat callback: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// 自動フェイルバックの判定と実行
+    /// </summary>
+    private void CheckAndPerformFailback(NodeInfo recoveredNode, DateTime now)
+    {
+        try
+        {
+            if (recoveredNode.RecoveryTime == null)
+            {
+                return;
+            }
+
+            var timeSinceRecovery = (now - recoveredNode.RecoveryTime.Value).TotalMilliseconds;
+            
+            // 回復後の安定期間をチェック
+            if (timeSinceRecovery >= _config.FailbackDelay)
+            {
+                _logger.Info($"Primary node {recoveredNode.NodeId} has been stable for {timeSinceRecovery:F0}ms - performing automatic failback");
+                
+                // フェイルバック実行
+                var currentActive = _nodes.Values.FirstOrDefault(n => n.State == NodeState.Active);
+                if (currentActive != null && currentActive.NodeId != recoveredNode.NodeId)
+                {
+                    // 現在のActiveをStandbyに
+                    currentActive.State = NodeState.Standby;
+                    
+                    // 回復したプライマリをActiveに
+                    recoveredNode.State = NodeState.Active;
+                    _currentState = NodeState.Active;
+                    recoveredNode.RecoveryTime = null; // リセット
+                    
+                    var failbackEvent = new FailoverEvent
+                    {
+                        Timestamp = now,
+                        FromNodeId = currentActive.NodeId,
+                        ToNodeId = recoveredNode.NodeId,
+                        Reason = "Automatic failback to recovered primary node",
+                        Success = true
+                    };
+                    _failoverHistory.Add(failbackEvent);
+                    
+                    _logger.Info($"Automatic failback completed: {currentActive.NodeId} → {recoveredNode.NodeId}");
+                }
+            }
+            else
+            {
+                var remainingTime = _config.FailbackDelay - timeSinceRecovery;
+                _logger.Debug($"Primary node {recoveredNode.NodeId} recovering - {remainingTime:F0}ms until automatic failback");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error in automatic failback: {ex.Message}", ex);
         }
     }
 
@@ -238,13 +319,16 @@ public class RedundancyService : IRedundancyService
                     if (wasUnhealthy)
                     {
                         _logger.Info($"Node {nodeId} recovered from unhealthy state");
+                        node.RecoveryTime = DateTime.UtcNow;
                         
-                        // 回復したノードがActiveノードだった場合、自動的にActiveに戻す
-                        if (node.NodeId == "primary" && _config.PrimaryNode != null)
+                        // プライマリノードが回復した場合、自動フェイルバックを検討
+                        if (_config.EnableAutoFailback && node.NodeId == "primary" && _config.PrimaryNode != null)
                         {
-                            _logger.Info($"Primary node {nodeId} recovered, considering failback");
-                            // 自動フェイルバック（オプション）
-                            // TODO: フェイルバックポリシーに基づいて実装
+                            var currentActive = _nodes.Values.FirstOrDefault(n => n.State == NodeState.Active);
+                            if (currentActive != null && currentActive.NodeId != "primary")
+                            {
+                                _logger.Info($"Primary node {nodeId} recovered - automatic failback will be considered after {_config.FailbackDelay}ms stability period");
+                            }
                         }
                     }
                     

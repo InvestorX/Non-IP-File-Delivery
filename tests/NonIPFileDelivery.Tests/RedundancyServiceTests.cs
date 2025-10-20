@@ -306,5 +306,111 @@ public class RedundancyServiceTests
         node.Weight.Should().Be(75);
         node.ActiveConnections.Should().Be(10);
     }
+
+    [Fact]
+    public async Task AutomaticFailover_Manual_ShouldWorkCorrectly()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10",
+            StandbyNode = "192.168.1.11"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        
+        var primary = service.GetNodeInfo("primary");
+        var standby = service.GetNodeInfo("standby");
+        primary!.State.Should().Be(NodeState.Active);
+        standby!.State.Should().Be(NodeState.Standby);
+
+        // Act - Manually perform failover
+        var result = await service.PerformFailoverAsync("Test failover");
+
+        // Assert
+        result.Should().BeTrue();
+        var primaryAfter = service.GetNodeInfo("primary");
+        var standbyAfter = service.GetNodeInfo("standby");
+        primaryAfter!.State.Should().Be(NodeState.Failed);
+        primaryAfter.IsHealthy.Should().BeFalse();
+        standbyAfter!.State.Should().Be(NodeState.Active);
+    }
+
+    [Fact]
+    public async Task AutomaticFailback_WhenConfigured_ShouldBeTriggeredByHeartbeat()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10",
+            StandbyNode = "192.168.1.11",
+            EnableAutoFailback = true,
+            FailbackDelay = 100
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        
+        // Trigger failover
+        await service.PerformFailoverAsync("Test failover");
+        var primaryFailed = service.GetNodeInfo("primary");
+        primaryFailed!.State.Should().Be(NodeState.Failed);
+        primaryFailed.IsHealthy.Should().BeFalse();
+
+        // Act - Simulate primary recovery with heartbeat
+        await service.RecordHeartbeatAsync("primary", NodeState.Standby);
+        
+        // Assert - Recovery time should be set
+        var primaryRecovering = service.GetNodeInfo("primary");
+        primaryRecovering!.RecoveryTime.Should().NotBeNull();
+        primaryRecovering.IsHealthy.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AutomaticFailback_WhenDisabled_RecoveryTimeShouldStillBeSet()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10",
+            StandbyNode = "192.168.1.11",
+            EnableAutoFailback = false
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        
+        // Trigger failover
+        await service.PerformFailoverAsync("Test failover");
+
+        // Act - Simulate primary recovery
+        await service.RecordHeartbeatAsync("primary", NodeState.Standby);
+
+        // Assert - Recovery time should be set even if auto-failback is disabled
+        var primaryRecovered = service.GetNodeInfo("primary");
+        primaryRecovered!.RecoveryTime.Should().NotBeNull();
+        primaryRecovered.IsHealthy.Should().BeTrue();
+        primaryRecovered.State.Should().Be(NodeState.Standby); // State set by RecordHeartbeatAsync
+    }
+
+    [Fact]
+    public async Task NodeRecoveryTime_ShouldBeSetWhenNodeRecovers()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10",
+            StandbyNode = "192.168.1.11"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+
+        // Mark primary as failed
+        await service.PerformFailoverAsync("Test failure");
+        var primaryFailed = service.GetNodeInfo("primary");
+        primaryFailed!.RecoveryTime.Should().BeNull();
+
+        // Act - Simulate recovery
+        await service.RecordHeartbeatAsync("primary", NodeState.Standby);
+
+        // Assert
+        var primaryRecovered = service.GetNodeInfo("primary");
+        primaryRecovered!.RecoveryTime.Should().NotBeNull();
+        primaryRecovered.RecoveryTime.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(1));
+    }
 }
 

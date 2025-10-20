@@ -27,6 +27,11 @@ public class NodeInfo
     public int Weight { get; set; } = 1;
     public bool IsHealthy { get; set; } = true;
     public int ActiveConnections { get; set; } = 0;
+    
+    /// <summary>
+    /// ノードが回復した時刻（自動フェイルバック判定用）
+    /// </summary>
+    public DateTime? RecoveryTime { get; set; }
 }
 
 /// <summary>
