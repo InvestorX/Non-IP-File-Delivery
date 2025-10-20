@@ -160,7 +160,8 @@ public class ConfigurationService : IConfigurationService
                 Interface = _configuration["Network:Interface"] ?? "eth0",
                 FrameSize = int.TryParse(_configuration["Network:FrameSize"], out var fs) ? fs : 9000,
                 Encryption = bool.TryParse(_configuration["Network:Encryption"], out var enc) && enc,
-                EtherType = _configuration["Network:EtherType"] ?? "0x88B5"
+                EtherType = _configuration["Network:EtherType"] ?? "0x88B5",
+                RemoteMacAddress = _configuration["Network:RemoteMacAddress"]
             },
             Security = new SecurityConfig
             {
@@ -254,6 +255,10 @@ public class ConfigurationService : IConfigurationService
             ini.AppendLine($"FrameSize={config.Network?.FrameSize ?? 9000}");
             ini.AppendLine($"Encryption={config.Network?.Encryption ?? true}");
             ini.AppendLine($"EtherType={config.Network?.EtherType ?? "0x88B5"}");
+            if (!string.IsNullOrEmpty(config.Network?.RemoteMacAddress))
+            {
+                ini.AppendLine($"RemoteMacAddress={config.Network.RemoteMacAddress}");
+            }
             ini.AppendLine();
             
             ini.AppendLine("[Security]");

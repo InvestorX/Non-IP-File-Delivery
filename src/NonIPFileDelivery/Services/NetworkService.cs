@@ -4,10 +4,12 @@ using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
 using NonIPFileDelivery.Models;
+using NonIpFileDelivery.Core;
+using PacketDotNet;
 
 namespace NonIPFileDelivery.Services;
 
-public class NetworkService : INetworkService
+public class NetworkService : INetworkService, IDisposable
 {
     private readonly ILoggingService _logger;
     private readonly IFrameService _frameService;
@@ -16,6 +18,8 @@ public class NetworkService : INetworkService
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _listeningTask;
     private byte[] _localMacAddress = new byte[6];
+    private RawEthernetTransceiver? _transceiver;
+    private bool _useRawEthernet;
 
     public bool IsInterfaceReady { get; private set; }
     public event EventHandler<FrameReceivedEventArgs>? FrameReceived;
@@ -90,6 +94,34 @@ public class NetworkService : INetworkService
 
             _logger.Info($"Using EtherType: {config.EtherType}");
             
+            // Initialize RawEthernetTransceiver if RemoteMacAddress is configured
+            _useRawEthernet = !string.IsNullOrEmpty(config.RemoteMacAddress);
+            
+            if (_useRawEthernet)
+            {
+                try
+                {
+                    _logger.Info($"Initializing RawEthernetTransceiver with remote MAC: {config.RemoteMacAddress}");
+                    _transceiver = new RawEthernetTransceiver(
+                        config.Interface,
+                        config.RemoteMacAddress!,
+                        channelCapacity: 10000
+                    );
+                    _logger.Info("RawEthernetTransceiver initialized successfully - PRODUCTION MODE");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"Failed to initialize RawEthernetTransceiver: {ex.Message}");
+                    _logger.Warning("Falling back to simulation mode");
+                    _useRawEthernet = false;
+                    _transceiver = null;
+                }
+            }
+            else
+            {
+                _logger.Warning("RemoteMacAddress not configured - using SIMULATION MODE");
+            }
+            
             IsInterfaceReady = true;
             _logger.Info("Network interface initialization completed successfully");
             
@@ -116,7 +148,20 @@ public class NetworkService : INetworkService
             _logger.Info("Starting network listening...");
             
             _cancellationTokenSource = new CancellationTokenSource();
-            _listeningTask = ListenForFramesAsync(_cancellationTokenSource.Token);
+            
+            if (_useRawEthernet && _transceiver != null)
+            {
+                // Production mode: Use RawEthernetTransceiver
+                _logger.Info("Starting RawEthernetTransceiver (PRODUCTION MODE)");
+                _transceiver.Start();
+                _listeningTask = ListenForRawFramesAsync(_cancellationTokenSource.Token);
+            }
+            else
+            {
+                // Simulation mode
+                _logger.Info("Starting frame simulation (SIMULATION MODE)");
+                _listeningTask = ListenForFramesAsync(_cancellationTokenSource.Token);
+            }
             
             _logger.Info("Network listening started successfully");
             return Task.FromResult(true);
@@ -154,6 +199,26 @@ public class NetworkService : INetworkService
         _listeningTask = null;
         
         _logger.Info("Network listening stopped");
+    }
+    
+    /// <summary>
+    /// リソースを解放
+    /// </summary>
+    public void Dispose()
+    {
+        _logger.Debug("Disposing NetworkService...");
+        
+        // Stop listening if still active
+        if (_listeningTask != null)
+        {
+            StopListening().Wait();
+        }
+        
+        // Dispose RawEthernetTransceiver
+        _transceiver?.Dispose();
+        _transceiver = null;
+        
+        _logger.Info("NetworkService disposed");
     }
 
     public async Task<bool> SendFrame(byte[] data, string destinationMac)
@@ -243,12 +308,19 @@ public class NetworkService : INetworkService
                 // QoS無効時は直接送信
                 _logger.Debug($"Sending frame to {destinationMac}, size: {serializedFrame.Length} bytes, type: {frame.Header.Type}, priority: {priority}");
                 
-                // Simulate raw socket transmission with realistic network timing
-                // In production, this would interface with RawEthernetTransceiver or libpcap
-                var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
-                await Task.Delay(transmissionTime);
-                
-                _logger.Debug($"Frame sent successfully to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                if (_useRawEthernet && _transceiver != null)
+                {
+                    // Production mode: Send via RawEthernetTransceiver
+                    await _transceiver.SendAsync(serializedFrame, CancellationToken.None);
+                    _logger.Debug($"Frame sent via Raw Ethernet to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                }
+                else
+                {
+                    // Simulation mode: Use Task.Delay
+                    var transmissionTime = CalculateTransmissionTime(serializedFrame.Length);
+                    await Task.Delay(transmissionTime);
+                    _logger.Debug($"Frame sent (simulated) to {destinationMac} (seq: {frame.Header.SequenceNumber})");
+                }
                 
                 // ✅ ACK/NAK統合: ACK要求フレームを待機キューに登録
                 if (frame.Header.Flags.HasFlag(FrameFlags.RequireAck))
@@ -306,6 +378,73 @@ public class NetworkService : INetworkService
         return Math.Max(1, (int)Math.Ceiling(transmissionTimeMs) + networkLatency);
     }
 
+    /// <summary>
+    /// Raw Ethernetフレーム受信ループ (PRODUCTION MODE)
+    /// </summary>
+    private async Task ListenForRawFramesAsync(CancellationToken cancellationToken)
+    {
+        if (_transceiver == null)
+        {
+            _logger.Error("RawEthernetTransceiver is not initialized");
+            return;
+        }
+
+        _logger.Info("Raw Ethernet frame listening loop started (PRODUCTION MODE)");
+        
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    // Receive raw Ethernet packet
+                    var ethPacket = await _transceiver.ReceiveAsync(cancellationToken);
+                    
+                    // Extract payload (NonIPFrame serialized data)
+                    var payloadData = ethPacket.PayloadData;
+                    
+                    // Deserialize to NonIPFrame
+                    var frame = _frameService.DeserializeFrame(payloadData);
+                    if (frame != null)
+                    {
+                        var sourceMacString = MacAddressToString(frame.Header.SourceMAC);
+                        _logger.Debug($"Received frame via Raw Ethernet: Type={frame.Header.Type}, From={sourceMacString}, Seq={frame.Header.SequenceNumber}");
+                        
+                        // Fire FrameReceived event
+                        FrameReceived?.Invoke(this, new FrameReceivedEventArgs(payloadData, sourceMacString));
+                    }
+                    else
+                    {
+                        _logger.Warning("Failed to deserialize received frame");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when stopping
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error("Error processing raw Ethernet frame", ex);
+                    // Continue listening despite errors
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Debug("Raw Ethernet frame listening cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Fatal error in raw Ethernet listening loop", ex);
+        }
+        
+        _logger.Info("Raw Ethernet frame listening loop ended");
+    }
+
+    /// <summary>
+    /// シミュレーションモードのフレーム受信ループ
+    /// </summary>
     private async Task ListenForFramesAsync(CancellationToken cancellationToken)
     {
         _logger.Debug("Frame listening loop started");

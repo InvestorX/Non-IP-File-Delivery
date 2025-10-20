@@ -24,6 +24,12 @@ public class NetworkConfig
     public int FrameSize { get; set; } = 9000;
     public bool Encryption { get; set; } = true;
     public string EtherType { get; set; } = "0x88B5";
+    
+    /// <summary>
+    /// リモート(対向)機器のMACアドレス
+    /// Raw Ethernet通信に使用。未設定の場合はシミュレーションモード
+    /// </summary>
+    public string? RemoteMacAddress { get; set; }
 }
 
 public class SecurityConfig
