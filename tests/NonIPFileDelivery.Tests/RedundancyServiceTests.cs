@@ -157,4 +157,154 @@ public class RedundancyServiceTests
         // Assert - No exception should be thrown
         service.Should().NotBeNull();
     }
+
+    [Fact]
+    public async Task RecordHeartbeatAsync_WithNewNode_ShouldRegisterNode()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        var metadata = new Dictionary<string, object>
+        {
+            ["Priority"] = 100,
+            ["Weight"] = 50,
+            ["ActiveConnections"] = 5
+        };
+
+        // Act
+        await service.RecordHeartbeatAsync("new-node", NodeState.Standby, metadata);
+
+        // Assert
+        var node = service.GetNodeInfo("new-node");
+        node.Should().NotBeNull();
+        node!.NodeId.Should().Be("new-node");
+        node.State.Should().Be(NodeState.Standby);
+        node.Priority.Should().Be(100);
+        node.Weight.Should().Be(50);
+        node.ActiveConnections.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task RecordHeartbeatAsync_WithExistingNode_ShouldUpdateHeartbeat()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10",
+            StandbyNode = "192.168.1.11"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        var node = service.GetNodeInfo("primary");
+        var initialHeartbeat = node!.LastHeartbeat;
+
+        // Wait to ensure timestamp changes
+        await Task.Delay(10);
+
+        // Act
+        await service.RecordHeartbeatAsync("primary", NodeState.Active);
+
+        // Assert
+        var updatedNode = service.GetNodeInfo("primary");
+        updatedNode!.LastHeartbeat.Should().BeAfter(initialHeartbeat);
+    }
+
+    [Fact]
+    public async Task RecordHeartbeatAsync_WithMetadata_ShouldUpdateNodeProperties()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        var metadata = new Dictionary<string, object>
+        {
+            ["Priority"] = 200,
+            ["Weight"] = 75,
+            ["ActiveConnections"] = 10
+        };
+
+        // Act
+        await service.RecordHeartbeatAsync("primary", NodeState.Active, metadata);
+
+        // Assert
+        var node = service.GetNodeInfo("primary");
+        node!.Priority.Should().Be(200);
+        node.Weight.Should().Be(75);
+        node.ActiveConnections.Should().Be(10);
+    }
+
+    [Fact]
+    public async Task RecordHeartbeatAsync_NodeRecovery_ShouldUpdateHealthStatus()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10",
+            StandbyNode = "192.168.1.11"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+
+        // Mark primary as failed
+        await service.PerformFailoverAsync("Test failure");
+        var node = service.GetNodeInfo("primary");
+        node!.IsHealthy.Should().BeFalse();
+        node.State.Should().Be(NodeState.Failed);
+
+        // Act - Record heartbeat to recover
+        await service.RecordHeartbeatAsync("primary", NodeState.Active);
+
+        // Assert
+        var recoveredNode = service.GetNodeInfo("primary");
+        recoveredNode!.IsHealthy.Should().BeTrue();
+        recoveredNode.State.Should().Be(NodeState.Active);
+    }
+
+    [Fact]
+    public async Task RecordHeartbeatAsync_WithNullMetadata_ShouldNotThrow()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+
+        // Act & Assert
+        var act = async () => await service.RecordHeartbeatAsync("primary", NodeState.Active, null);
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task RecordHeartbeatAsync_WithInvalidMetadataTypes_ShouldIgnoreInvalidValues()
+    {
+        // Arrange
+        var config = new RedundancyConfig
+        {
+            PrimaryNode = "192.168.1.10"
+        };
+        using var service = new RedundancyService(_mockLogger.Object, config);
+        var initialNode = service.GetNodeInfo("primary");
+        var initialPriority = initialNode!.Priority;
+
+        var metadata = new Dictionary<string, object>
+        {
+            ["Priority"] = "invalid string", // Invalid type
+            ["Weight"] = 75,
+            ["ActiveConnections"] = 10
+        };
+
+        // Act
+        await service.RecordHeartbeatAsync("primary", NodeState.Active, metadata);
+
+        // Assert
+        var node = service.GetNodeInfo("primary");
+        node!.Priority.Should().Be(initialPriority); // Should not change
+        node.Weight.Should().Be(75);
+        node.ActiveConnections.Should().Be(10);
+    }
 }
+

@@ -162,6 +162,105 @@ public class RedundancyService : IRedundancyService
         }
     }
 
+    public Task RecordHeartbeatAsync(string nodeId, NodeState state, Dictionary<string, object>? metadata = null)
+    {
+        try
+        {
+            lock (_lockObject)
+            {
+                if (!_nodes.TryGetValue(nodeId, out var node))
+                {
+                    _logger.Warning($"Received heartbeat from unknown node: {nodeId}");
+                    
+                    // 新しいノードとして登録
+                    node = new NodeInfo
+                    {
+                        NodeId = nodeId,
+                        State = state,
+                        Priority = 100,
+                        Weight = 1,
+                        IsHealthy = true,
+                        LastHeartbeat = DateTime.UtcNow
+                    };
+                    
+                    // メタデータがあれば適用
+                    if (metadata != null)
+                    {
+                        foreach (var kvp in metadata)
+                        {
+                            if (kvp.Key == "Priority" && kvp.Value is int priority)
+                            {
+                                node.Priority = priority;
+                            }
+                            else if (kvp.Key == "Weight" && kvp.Value is int weight)
+                            {
+                                node.Weight = weight;
+                            }
+                            else if (kvp.Key == "ActiveConnections" && kvp.Value is int activeConnections)
+                            {
+                                node.ActiveConnections = activeConnections;
+                            }
+                        }
+                    }
+                    
+                    _nodes[nodeId] = node;
+                    _logger.Info($"Registered new node from heartbeat: {nodeId}, Priority={node.Priority}, Weight={node.Weight}");
+                }
+                else
+                {
+                    // 既存ノードのハートビート更新
+                    var wasUnhealthy = !node.IsHealthy;
+                    
+                    node.LastHeartbeat = DateTime.UtcNow;
+                    node.State = state;
+                    node.IsHealthy = true;
+                    
+                    // メタデータ更新
+                    if (metadata != null)
+                    {
+                        foreach (var kvp in metadata)
+                        {
+                            if (kvp.Key == "Priority" && kvp.Value is int priority)
+                            {
+                                node.Priority = priority;
+                            }
+                            else if (kvp.Key == "Weight" && kvp.Value is int weight)
+                            {
+                                node.Weight = weight;
+                            }
+                            else if (kvp.Key == "ActiveConnections" && kvp.Value is int activeConnections)
+                            {
+                                node.ActiveConnections = activeConnections;
+                            }
+                        }
+                    }
+                    
+                    if (wasUnhealthy)
+                    {
+                        _logger.Info($"Node {nodeId} recovered from unhealthy state");
+                        
+                        // 回復したノードがActiveノードだった場合、自動的にActiveに戻す
+                        if (node.NodeId == "primary" && _config.PrimaryNode != null)
+                        {
+                            _logger.Info($"Primary node {nodeId} recovered, considering failback");
+                            // 自動フェイルバック（オプション）
+                            // TODO: フェイルバックポリシーに基づいて実装
+                        }
+                    }
+                    
+                    _logger.Debug($"Heartbeat recorded for node {nodeId}: State={state}, Healthy={node.IsHealthy}");
+                }
+            }
+            
+            return Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Error recording heartbeat for node {nodeId}: {ex.Message}", ex);
+            throw;
+        }
+    }
+
     public Task<bool> PerformFailoverAsync(string reason)
     {
         lock (_lockObject)
@@ -192,6 +291,7 @@ public class RedundancyService : IRedundancyService
 
                 // フェイルオーバー実行
                 activeNode.State = NodeState.Failed;
+                activeNode.IsHealthy = false;
                 standbyNode.State = NodeState.Active;
                 _currentState = NodeState.Active;
 

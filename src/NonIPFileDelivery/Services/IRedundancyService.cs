@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using NonIPFileDelivery.Models;
 
@@ -28,6 +29,14 @@ public interface IRedundancyService : IDisposable
     /// フェイルオーバーを実行
     /// </summary>
     Task<bool> PerformFailoverAsync(string reason);
+
+    /// <summary>
+    /// 外部ノードからのハートビートを記録
+    /// </summary>
+    /// <param name="nodeId">ノードID</param>
+    /// <param name="state">ノード状態</param>
+    /// <param name="metadata">追加のメタデータ</param>
+    Task RecordHeartbeatAsync(string nodeId, NodeState state, Dictionary<string, object>? metadata = null);
 
     /// <summary>
     /// ノード情報を取得
