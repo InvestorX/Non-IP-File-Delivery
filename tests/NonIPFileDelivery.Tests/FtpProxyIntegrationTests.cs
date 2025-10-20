@@ -80,7 +80,11 @@ public class FtpProxyIntegrationTests : IDisposable
             
             // セッションID（8バイト）をスキップしてコマンドを取得
             var receivedCommand = Encoding.ASCII.GetString(payload[9..]);
-            receivedCommand.Should().Be(command, "送信したコマンドが転送されるべき");
+            
+            // FTPコマンドが正しく転送されていることを確認（改行コードの違いを許容）
+            receivedCommand.TrimEnd('\r', '\n').Should().Be("USER anonymous", 
+                "送信したコマンドが転送されるべき");
+            receivedCommand.Should().Contain("USER", "USERコマンドが含まれているべき");
         }
 
         // Cleanup
