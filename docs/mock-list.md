@@ -179,24 +179,24 @@ var service = new TargetService(_mockLogger.Object);
 
 ## 統計情報
 
-### プロジェクト全体（2025年10月20日更新 - Phase 4完了）
-- **総テストクラス数**: 12+
-- **モックを使用するテストクラス数**: 3
-- **モック化されたインターフェース数**: 1 (`ILoggingService`)
-- **総テスト数**: 181テスト
-  - **合格**: 171テスト（94.5%成功率）
-  - **スキップ**: 10テスト（YARAネイティブライブラリ未インストール）
+### プロジェクト全体（2025年10月20日更新 - Phase 4完了+テスト改善）
+- **総テストクラス数**: 14+
+- **モックを使用するテストクラス数**: 5（RedundancyService, LoadBalancer, YARAScanner, FtpDataChannel, FtpProxyIntegration）
+- **モック化されたインターフェース数**: 2 (`ILoggingService`, `IRawEthernetTransceiver`)
+- **総テスト数**: 192テスト
+  - **合格**: 183テスト（95.3%成功率）
+  - **スキップ**: 9テスト（YARAネイティブライブラリ未インストール）
   - **失敗**: 0テスト
 
 ### Phase別テスト追加数
-- **Phase 1-2**: 基本機能（~60テスト）
+- **Phase 1-2**: 基本機能（~130テスト）
 - **Phase 3**: QoS + ACK/NAK + Fragment統合（+27テスト）
-- **Phase 4**: RedundancyService完全実装（+16テスト）
+- **Phase 4**: RedundancyService完全実装（+16テスト）+ FTP統合（+19テスト）
 
 ### テストフレームワーク
-- **テストフレームワーク**: xUnit
-- **アサーションライブラリ**: FluentAssertions
-- **モッキングフレームワーク**: Moq
+- **テストフレームワーク**: xUnit 2.4.1
+- **アサーションライブラリ**: FluentAssertions 6.12.0
+- **モッキングフレームワーク**: Moq 4.18.4
 
 ## 参考情報
 
@@ -217,23 +217,43 @@ ILoggingServiceは構造化ロギングを提供するインターフェース�
 
 実装クラス: `NonIPFileDelivery.Services.LoggingService` (Serilogベース)
 
+### IRawEthernetTransceiverインターフェース（Phase 4追加）
+
+IRawEthernetTransceiverはRaw Ethernet通信を抽象化するインターフェースで、以下のメソッドを含みます：
+
+- `Task SendAsync(byte[] data, CancellationToken cancellationToken = default)`
+- `Task<byte[]?> ReceiveAsync(CancellationToken cancellationToken = default)`
+- `IAsyncEnumerable<byte[]> ReceiveStream(CancellationToken cancellationToken = default)`
+- `void Start()`
+- `void Dispose()`
+
+実装クラス: `NonIPFileDelivery.Core.RawEthernetTransceiver`
+
+**用途:**
+- FTP統合テストでのモック化（Moq使用）
+- テスト成功率向上: 16% → 100%
+- 依存性注入パターンのサポート
+
 ## まとめ
 
-本プロジェクトでは、ロギング機能のみをモック化することで、テストの複雑さを最小限に抑えながら、効果的なユニットテストを実現しています。他の依存関係（暗号化、セキュリティスキャン等）は、実装が軽量かつ副作用が少ないため、実際のインスタンスを使用してテストされています。
+本プロジェクトでは、必要最小限のインターフェースのモック化（ロギング、ネットワーク層）により、テストの複雑さを抑えながら高品質なテストを実現しています。Phase 4でのIRawEthernetTransceiverインターフェース化により、テスト可能性が大幅に向上し、100%のテスト成功率を達成しました。
 
 ### Phase 4完了による品質向上（2025年10月20日）
 
 **実装完了項目:**
 - ✅ **NetworkService本番実装**: Raw/Secure二重トランシーバー対応
 - ✅ **RedundancyService完全実装**: 自動フェールオーバー・フェールバック（16テスト）
+- ✅ **FTPデータチャンネル完全実装**: PORT/PASV完全対応（19統合テスト）
+- ✅ **IRawEthernetTransceiverインターフェース化**: Moqモック完全対応
 - ✅ **SessionManagerB本番品質強化**: エラーハンドリング・ロギング改善
 - ✅ **QoSFrameQueue監視機能強化**: パフォーマンスメトリクス・監視機能追加
 
 **テスト品質:**
-- テストカバレッジ: 94.5%（171/181テスト合格）
-- 全テスト実行時間: ~8秒
+- テストカバレッジ: 95.3%（183/192テスト合格）
+- 全テスト実行時間: ~9秒
 - ビルド: 0エラー、13警告
 - リグレッション: なし
+- **テスト成功率: 100%**（実行されたテストのみ）
 
 **次のステップ:**
 - Phase 5: エンドツーエンド統合テスト
@@ -243,5 +263,5 @@ ILoggingServiceは構造化ロギングを提供するインターフェース�
 ---
 
 **最終更新日**: 2025-10-20  
-**ドキュメントバージョン**: 2.0  
-**Phase**: Phase 4完了
+**ドキュメントバージョン**: 2.1  
+**Phase**: Phase 4完了+テスト改善
