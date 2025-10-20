@@ -261,6 +261,19 @@ if (pendingFrame != null)
 
 ## 🚀 次のステップ（Phase 4推奨）
 
+### 最優先（レビュー指摘対応）
+1. **NetworkServiceの本番実装**: 
+   - SecureEthernetTransceiverとの統合
+   - 実際のRaw Ethernetパケット送受信
+   - Task.Delayシミュレーションの置き換え
+   - 推定工数: 3-5日
+
+2. **RedundancyService完全実装**:
+   - `RecordHeartbeat()`メソッド実装
+   - 自動フェイルオーバー機能の完全統合
+   - ノード間通信の実装
+   - 推定工数: 2-3日
+
 ### 高優先度
 1. **統合テストの実環境実施**: 既存のテストプロジェクト（156行）を実環境で実行
 2. **パフォーマンステストの実行**: 2Gbps要件の実測
@@ -273,7 +286,69 @@ if (pendingFrame != null)
 
 ---
 
+## ⚠️ レビュー指摘事項と対応
+
+### 指摘事項1: NetworkServiceはシミュレーション実装
+**指摘内容**: NetworkService.csはRaw Ethernet送受信のシミュレーション実装
+
+**現状**:
+- QoS統合とACK/NAK統合は完全実装
+- フレーム送受信は`Task.Delay()`でシミュレート
+- 実際のパケット送受信は未実装
+
+**対応計画**:
+- Phase 4でSecureEthernetTransceiverとの統合を実施
+- Raw Ethernetパケット送受信の本番実装
+- 推定工数: 3-5日
+
+### 指摘事項2: RedundancyServiceの未実装メソッド
+**指摘内容**: RedundancyService.RecordHeartbeatメソッドが未実装
+
+**現状**:
+- ノード管理、ハートビートタイマー、フェイルオーバーロジックは実装済み
+- `RecordHeartbeat()`メソッドが存在しない
+- 自動フェイルオーバー機能の完全統合が不完全
+
+**対応計画**:
+- Phase 4で`RecordHeartbeat()`メソッドを実装
+- ノード間通信の実装
+- 推定工数: 2-3日
+
+### 指摘事項3: SessionInfo.State/Status属性
+**指摘内容**: SessionInfo.State/Status属性の実装状況
+
+**現状確認**:
+- ✅ `SessionInfo.State`プロパティは実装済み（SessionState enum）
+- ✅ `SessionState` enum定義済み（Establishing, Active, Closing, Closed, TimedOut, Error）
+- ✅ `IsActive()`メソッド実装済み
+- ✅ `IsTimedOut()`メソッド実装済み
+
+**結論**: この項目は実装済み（指摘は誤り）
+
+### 指摘事項4: 自動フェイルオーバー機能
+**指摘内容**: 自動フェイルオーバー機能が未実装
+
+**現状**:
+- ✅ `PerformFailoverAsync()`メソッド実装済み
+- ✅ ハートビートタイムアウト検出実装済み
+- ⚠️ ノード間通信が未実装
+- ⚠️ 実運用での完全統合が未実施
+
+**対応計画**:
+- Phase 4でノード間通信を実装
+- 実環境での統合テスト
+- 推定工数: 2-3日（RecordHeartbeat実装と合わせて）
+
+---
+
 ## 📝 レビュアーへの注意事項
+
+### ⚠️ シミュレーション実装について
+**NetworkService.csの制限事項**:
+- Raw Ethernet送受信は`Task.Delay()`でシミュレート
+- QoS統合とACK/NAK統合のロジックは完全実装
+- SecureEthernetTransceiverへの統合はPhase 4で実施予定
+- 現時点では統合テストのみ可能（実環境テスト不可）
 
 ### 重要な変更
 1. **NetworkService.SendFrame()**: QoSとACK/NAK統合により、フレーム送信フローが大幅に変更されています

@@ -1000,7 +1000,7 @@ As long as you retain this notice you can do whatever you want with this stuff. 
 - 全テスト合格
 
 #### ⚠️ 実装済み・統合テスト待ちの機能
-- ✅ **セッション管理機能**: 完全実装（242行）、実環境統合テスト待ち
+- ✅ **セッション管理機能**: 完全実装（242行、SessionState enum含む）、実環境統合テスト待ち
 - ✅ **フラグメント処理**: 完全実装（330行、SHA256検証付き）、データ処理統合完了
 - ✅ **再送制御（ACK/NAK）**: **完全実装・NetworkService統合完了**
   - ACK待機キュー管理
@@ -1011,6 +1011,14 @@ As long as you retain this notice you can do whatever you want with this stuff. 
   - TokenBucket帯域制御
   - 優先度キュー（High/Normal/Low）
   - 22/22テスト合格
+- ⚠️ **NetworkService（Raw Ethernet送受信）**: **シミュレーション実装**
+  - QoS統合とACK/NAK統合は完全実装
+  - フレーム送受信はTask.Delayでシミュレート
+  - SecureEthernetTransceiverへの統合が必要
+- ⚠️ **RedundancyService（冗長化機能）**: **部分実装**
+  - ノード管理、ハートビートタイマー、フェイルオーバーロジック実装済み
+  - RecordHeartbeat()メソッド未実装
+  - 自動フェイルオーバー機能の完全統合が必要
 - ⚠️ **YARAマルウェアスキャン**: dnYara 2.1.0完全統合、**ネイティブlibyaraライブラリが必要**
 - ⚠️ **ClamAV拡張コマンド**: MULTISCAN/CONTSCAN実装済み、**外部clamdデーモン接続未検証**
 - ⚠️ **Windows Defender**: MpCmdRun.exe統合済み、**Windows環境でのみ動作**
