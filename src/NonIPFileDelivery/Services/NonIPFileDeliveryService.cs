@@ -929,11 +929,42 @@ public class NonIPFileDeliveryService
                 
                 _logger.Warning($"NACK for sequence {nackedSequenceNumber} from {sourceMac}: {reason}");
                 
-                // TODO: 即座に再送を試みる（タイムアウトを待たない）
-                // 現在の実装では、GetTimedOutFrames()によるタイムアウト再送のみ
-                // 将来的には、NACK受信時に即座に再送するロジックを追加
-                
-                _logger.Info($"NACK processed: sequence {nackedSequenceNumber} will be retransmitted on timeout");
+                // ✅ NACK即時再送: タイムアウトを待たずに即座に再送を試みる
+                var pendingFrame = _frameService.GetPendingFrame(nackedSequenceNumber);
+                if (pendingFrame != null)
+                {
+                    _logger.Info($"Attempting immediate retransmission for sequence {nackedSequenceNumber} due to NACK");
+                    
+                    try
+                    {
+                        // フレームをシリアライズ
+                        var frameData = _frameService.SerializeFrame(pendingFrame);
+                        
+                        // 送信先MACアドレスを取得（NACKの送信元 = 元の送信先）
+                        var destinationMac = sourceMac;
+                        
+                        // NetworkServiceを使用して再送
+                        var sent = await _networkService.SendFrame(frameData, destinationMac);
+                        
+                        if (sent)
+                        {
+                            _logger.Info($"Frame {nackedSequenceNumber} retransmitted immediately in response to NACK");
+                        }
+                        else
+                        {
+                            _logger.Warning($"Immediate retransmission failed for sequence {nackedSequenceNumber}");
+                        }
+                    }
+                    catch (Exception retryEx)
+                    {
+                        _logger.Error($"Immediate retransmission failed for sequence {nackedSequenceNumber}: {retryEx.Message}", retryEx);
+                        _logger.Info($"Frame {nackedSequenceNumber} will be retransmitted on timeout");
+                    }
+                }
+                else
+                {
+                    _logger.Warning($"No pending frame found for NACK sequence {nackedSequenceNumber}. May have already been ACKed or timed out.");
+                }
             }
             else
             {

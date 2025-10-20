@@ -422,6 +422,21 @@ namespace NonIPFileDelivery.Services
         }
 
         /// <summary>
+        /// 特定のシーケンス番号のPending中フレームを取得（NACK即時再送用）
+        /// </summary>
+        public NonIPFrame? GetPendingFrame(ushort sequenceNumber)
+        {
+            if (_retryQueue.TryGetValue(sequenceNumber, out var frame))
+            {
+                _logger.Debug($"Retrieved pending frame for sequence {sequenceNumber}");
+                return frame;
+            }
+
+            _logger.Warning($"No pending frame found for sequence {sequenceNumber}");
+            return null;
+        }
+
+        /// <summary>
         /// タイムアウトしたフレームを取得（再送用）
         /// </summary>
         public System.Collections.Generic.List<NonIPFrame> GetTimedOutFrames()

@@ -271,4 +271,59 @@ public class AckNakIntegrationTests
         var statsAfter = _frameService.GetStatistics();
         Assert.Equal(0, statsAfter.PendingAcks);
     }
+
+    [Fact]
+    public void GetPendingFrame_WithRegisteredFrame_ShouldReturnFrame()
+    {
+        // Arrange
+        var sourceMac = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
+        var destMac = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+        var testData = new byte[] { 0x11, 0x22, 0x33, 0x44 };
+        
+        var frame = _frameService.CreateDataFrame(sourceMac, destMac, testData, FrameFlags.RequireAck);
+
+        // Act - フレームを登録
+        _frameService.RegisterPendingAck(frame);
+
+        // Assert - 同じシーケンス番号でフレームを取得できる
+        var retrievedFrame = _frameService.GetPendingFrame(frame.Header.SequenceNumber);
+        
+        Assert.NotNull(retrievedFrame);
+        Assert.Equal(frame.Header.SequenceNumber, retrievedFrame.Header.SequenceNumber);
+        Assert.Equal(frame.Header.Type, retrievedFrame.Header.Type);
+    }
+
+    [Fact]
+    public void GetPendingFrame_WithUnregisteredSequence_ShouldReturnNull()
+    {
+        // Arrange
+        ushort nonExistentSequence = 9999;
+
+        // Act
+        var retrievedFrame = _frameService.GetPendingFrame(nonExistentSequence);
+
+        // Assert
+        Assert.Null(retrievedFrame);
+    }
+
+    [Fact]
+    public void GetPendingFrame_AfterProcessAck_ShouldReturnNull()
+    {
+        // Arrange
+        var sourceMac = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
+        var destMac = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+        var testData = new byte[] { 0x11, 0x22, 0x33, 0x44 };
+        
+        var frame = _frameService.CreateDataFrame(sourceMac, destMac, testData, FrameFlags.RequireAck);
+        var sequenceNumber = frame.Header.SequenceNumber;
+
+        // Act - フレームを登録してからACK処理
+        _frameService.RegisterPendingAck(frame);
+        _frameService.ProcessAck(sequenceNumber);
+
+        // Assert - ACK処理後はフレームが削除されている
+        var retrievedFrame = _frameService.GetPendingFrame(sequenceNumber);
+        Assert.Null(retrievedFrame);
+    }
 }
+

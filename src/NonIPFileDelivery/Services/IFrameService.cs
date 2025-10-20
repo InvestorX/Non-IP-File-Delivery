@@ -21,6 +21,7 @@ public interface IFrameService
     NonIPFrame CreateNackFrame(byte[] sourceMac, byte[] destinationMac, ushort sequenceNumber, string reason = "");
     void RegisterPendingAck(NonIPFrame frame);
     bool ProcessAck(ushort sequenceNumber);
+    NonIPFrame? GetPendingFrame(ushort sequenceNumber);
     List<NonIPFrame> GetTimedOutFrames();
     void ClearRetryQueue();
     (int PendingAcks, int RetryQueueSize) GetStatistics();
