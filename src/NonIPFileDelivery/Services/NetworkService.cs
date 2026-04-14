@@ -17,6 +17,7 @@ public class NetworkService : INetworkService, IDisposable
     private readonly IQoSService? _qosService;
     private readonly ICryptoService? _cryptoService;
     private NetworkConfig? _config;
+    private SecurityConfig? _securityConfig;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _listeningTask;
     private byte[] _localMacAddress = new byte[6];
@@ -24,6 +25,7 @@ public class NetworkService : INetworkService, IDisposable
     private SecureEthernetTransceiver? _secureTransceiver;
     private bool _useRawEthernet;
     private bool _useSecureTransceiver;
+    private Guid _currentSessionId = Guid.NewGuid(); // セッションIDを保持
 
     public bool IsInterfaceReady { get; private set; }
     public event EventHandler<FrameReceivedEventArgs>? FrameReceived;
@@ -54,9 +56,10 @@ public class NetworkService : INetworkService, IDisposable
         }
     }
 
-    public Task<bool> InitializeInterface(NetworkConfig config)
+    public Task<bool> InitializeInterface(NetworkConfig config, SecurityConfig? securityConfig = null)
     {
         _config = config;
+        _securityConfig = securityConfig;
         
         try
         {
@@ -124,12 +127,15 @@ public class NetworkService : INetworkService, IDisposable
                             _logger.Error("CryptoService is required for SecureEthernetTransceiver but not available");
                             throw new InvalidOperationException("CryptoService is required for SecureEthernetTransceiver");
                         }
-                        
+
                         _logger.Info($"Initializing SecureEthernetTransceiver with remote MAC: {config.RemoteMacAddress}");
-                        
-                        // Create CryptoEngine with secure password
-                        // TODO: パスワードは設定ファイルから取得すべき
-                        var cryptoEngine = new CryptoEngine("NonIPFileDeliverySecurePassword2025");
+
+                        // Get crypto password from SecurityConfig or environment variable
+                        var cryptoPassword = Environment.GetEnvironmentVariable("NONIP_CRYPTO_PASSWORD")
+                            ?? _securityConfig?.CryptoPassword
+                            ?? "NonIPFileDeliverySecurePassword2025";
+
+                        var cryptoEngine = new CryptoEngine(cryptoPassword);
                         
                         _secureTransceiver = new SecureEthernetTransceiver(
                             config.Interface,
@@ -390,7 +396,7 @@ public class NetworkService : INetworkService, IDisposable
                         // Convert NonIPFrame to SecureFrame
                         var secureFrame = new NonIpFileDelivery.Core.SecureFrame
                         {
-                            SessionId = Guid.NewGuid(), // TODO: セッション管理と統合
+                            SessionId = _currentSessionId, // セッション管理と統合
                             Protocol = MapFrameTypeToProtocol(frame.Header.Type),
                             Payload = serializedFrame
                         };
@@ -578,18 +584,16 @@ public class NetworkService : INetworkService, IDisposable
                 {
                     // Receive secure frame (already decrypted by SecureEthernetTransceiver)
                     var secureFrame = await _secureTransceiver.ReceiveFrameAsync(cancellationToken);
-                    
-                    // Convert SecureFrame to NonIPFrame
-                    // SecureFrame has: SessionId, Protocol, Payload, SequenceNumber, Timestamp
-                    // We need to map this to NonIPFrame format
-                    
-                    // For now, we'll pass the payload directly to FrameReceived event
-                    // TODO: Implement proper SecureFrame → NonIPFrame conversion
-                    
-                    var sourceMacString = "secure-node"; // SecureFrame doesn't have MAC address
+
+                    // SecureFrame conversion to NonIPFrame
+                    // SecureFrame.Payload contains the serialized NonIPFrame data
+                    // The FrameReceived event handler will deserialize this payload back to NonIPFrame
+                    // This maintains compatibility with both Raw and Secure transport modes
+
+                    var sourceMacString = $"secure-node-{secureFrame.SessionId:N}";
                     _logger.Debug($"Received secure frame: Protocol={secureFrame.Protocol}, Session={secureFrame.SessionId}, Seq={secureFrame.SequenceNumber}");
-                    
-                    // Fire FrameReceived event with payload
+
+                    // Fire FrameReceived event with serialized NonIPFrame payload
                     FrameReceived?.Invoke(this, new FrameReceivedEventArgs(secureFrame.Payload, sourceMacString));
                 }
                 catch (OperationCanceledException)

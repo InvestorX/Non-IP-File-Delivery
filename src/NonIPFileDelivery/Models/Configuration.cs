@@ -45,6 +45,12 @@ public class SecurityConfig
     public int ScanTimeout { get; set; } = 5000;
     public string QuarantinePath { get; set; } = "C:\\NonIP\\Quarantine";
     public string PolicyFile { get; set; } = "security_policy.ini";
+
+    /// <summary>
+    /// 暗号化に使用するパスワード（SecureEthernetTransceiver用）
+    /// 本番環境では環境変数 NONIP_CRYPTO_PASSWORD から読み込むことを推奨
+    /// </summary>
+    public string CryptoPassword { get; set; } = "NonIPFileDeliverySecurePassword2025";
 }
 
 public class PerformanceConfig
