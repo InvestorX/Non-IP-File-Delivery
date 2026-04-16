@@ -592,11 +592,23 @@ public class NetworkService : INetworkService, IDisposable
 
                     // SecureFrame conversion to NonIPFrame
                     // SecureFrame.Payload contains the serialized NonIPFrame data
-                    // The FrameReceived event handler will deserialize this payload back to NonIPFrame
-                    // This maintains compatibility with both Raw and Secure transport modes
+                    // Extract the source MAC from the deserialized NonIPFrame for downstream compatibility
+                    // (e.g., SendAcknowledgment/ParseMacAddress expect AA:BB:CC:DD:EE:FF format)
 
-                    var sourceMacString = $"secure-node-{secureFrame.SessionId:N}";
-                    _logger.Debug($"Received secure frame: Protocol={secureFrame.Protocol}, Session={secureFrame.SessionId}, Seq={secureFrame.SequenceNumber}");
+                    string sourceMacString;
+                    try
+                    {
+                        var innerFrame = _frameService.DeserializeFrame(secureFrame.Payload);
+                        sourceMacString = innerFrame != null
+                            ? MacAddressToString(innerFrame.Header.SourceMAC)
+                            : (_config?.RemoteMacAddress ?? "00:00:00:00:00:00");
+                    }
+                    catch
+                    {
+                        sourceMacString = _config?.RemoteMacAddress ?? "00:00:00:00:00:00";
+                    }
+
+                    _logger.Debug($"Received secure frame: Protocol={secureFrame.Protocol}, Session={secureFrame.SessionId}, Seq={secureFrame.SequenceNumber}, SourceMAC={sourceMacString}");
 
                     // Fire FrameReceived event with serialized NonIPFrame payload
                     FrameReceived?.Invoke(this, new FrameReceivedEventArgs(secureFrame.Payload, sourceMacString));

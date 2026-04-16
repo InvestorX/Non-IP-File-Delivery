@@ -85,7 +85,11 @@ UseSecureTransceiver=false
 | `ScanTimeout` | `5000` | スキャンタイムアウト（ミリ秒） |
 | `QuarantinePath` | `C:\NonIP\Quarantine` | 隔離ファイルの保存先 |
 | `PolicyFile` | `security_policy.ini` | セキュリティポリシーファイルのパス |
-| `CryptoPassword` | (デフォルト値あり) | 暗号化パスワード<br>**本番環境では環境変数`NONIP_CRYPTO_PASSWORD`から読み込むことを推奨** |
+| `CryptoPassword` | (空文字列) | 暗号化パスワード<br>**`UseSecureTransceiver=true`の場合は必須。環境変数`NONIP_CRYPTO_PASSWORD`の使用を推奨** |
+
+**優先順位:** `環境変数 NONIP_CRYPTO_PASSWORD` > `config.ini [Security] CryptoPassword` > `appsettings.json security.cryptoPassword`
+
+INIローダー（`ConfigurationService.LoadFromIni`）は`Security:CryptoPassword`を読み込み、環境変数が設定されている場合はそちらが優先されます。
 
 **例:**
 ```ini
@@ -95,7 +99,8 @@ ScanTimeout=5000
 QuarantinePath=C:\NonIP\Quarantine
 PolicyFile=security_policy.ini
 # 本番環境では環境変数 NONIP_CRYPTO_PASSWORD を使用してください
-CryptoPassword=NonIPFileDeliverySecurePassword2025
+# このファイルにパスワードを直接記載しないことを推奨
+CryptoPassword=<set via NONIP_CRYPTO_PASSWORD>
 ```
 
 **セキュリティのベストプラクティス:**

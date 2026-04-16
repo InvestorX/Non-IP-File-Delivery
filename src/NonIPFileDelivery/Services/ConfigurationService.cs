@@ -169,7 +169,10 @@ public class ConfigurationService : IConfigurationService
                 EnableVirusScan = bool.TryParse(_configuration["Security:EnableVirusScan"], out var ena) && ena,
                 ScanTimeout = int.TryParse(_configuration["Security:ScanTimeout"], out var to) ? to : 5000,
                 QuarantinePath = _configuration["Security:QuarantinePath"] ?? "C:\\NonIP\\Quarantine",
-                PolicyFile = _configuration["Security:PolicyFile"] ?? "security_policy.ini"
+                PolicyFile = _configuration["Security:PolicyFile"] ?? "security_policy.ini",
+                CryptoPassword = Environment.GetEnvironmentVariable("NONIP_CRYPTO_PASSWORD")
+                    ?? _configuration["Security:CryptoPassword"]
+                    ?? string.Empty
             },
             Performance = new PerformanceConfig
             {
