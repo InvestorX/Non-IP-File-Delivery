@@ -16,7 +16,7 @@ public enum FramePriority
 
 public interface INetworkService
 {
-    Task<bool> InitializeInterface(NetworkConfig config, SecurityConfig? securityConfig = null);
+    Task<bool> InitializeInterface(NetworkConfig config, SecurityConfig? securityConfig);
     Task<bool> StartListening();
     Task StopListening();
     Task<bool> SendFrame(byte[] data, string destinationMac);
