@@ -87,9 +87,9 @@ UseSecureTransceiver=false
 | `PolicyFile` | `security_policy.ini` | セキュリティポリシーファイルのパス |
 | `CryptoPassword` | (空文字列) | 暗号化パスワード<br>**`UseSecureTransceiver=true`の場合は必須。環境変数`NONIP_CRYPTO_PASSWORD`の使用を推奨** |
 
-**優先順位:** `環境変数 NONIP_CRYPTO_PASSWORD` > `config.ini [Security] CryptoPassword` > `appsettings.json security.cryptoPassword`
+**優先順位:** `環境変数 NONIP_CRYPTO_PASSWORD` > `config.ini [Security] CryptoPassword` > `空文字列（未設定）`
 
-INIローダー（`ConfigurationService.LoadFromIni`）は`Security:CryptoPassword`を読み込み、環境変数が設定されている場合はそちらが優先されます。
+INIローダー（`ConfigurationService.LoadFromIni`）は`Security:CryptoPassword`を読み込み、環境変数が設定されている場合はそちらが優先されます。`UseSecureTransceiver=true`の場合、パスワード未設定時は初期化エラーとなります。
 
 **例:**
 ```ini

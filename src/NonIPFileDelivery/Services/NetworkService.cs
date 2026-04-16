@@ -603,8 +603,9 @@ public class NetworkService : INetworkService, IDisposable
                             ? MacAddressToString(innerFrame.Header.SourceMAC)
                             : (_config?.RemoteMacAddress ?? "00:00:00:00:00:00");
                     }
-                    catch
+                    catch (Exception deserializeEx)
                     {
+                        _logger.Warning($"Failed to deserialize inner NonIPFrame from secure payload: {deserializeEx.Message}");
                         sourceMacString = _config?.RemoteMacAddress ?? "00:00:00:00:00:00";
                     }
 
