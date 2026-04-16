@@ -80,7 +80,7 @@ public class NonIPFileDeliveryService
 
             // Initialize network interface
             _logger.Info("Initializing network interface...");
-            if (!await _networkService.InitializeInterface(configuration.Network))
+            if (!await _networkService.InitializeInterface(configuration.Network, configuration.Security))
             {
                 _logger.Error("Network interface initialization failed");
                 return false;

@@ -26,6 +26,7 @@ public class RedundancyService : IRedundancyService
     private System.Diagnostics.Process? _currentProcess;
     private DateTime _lastCpuCheck = DateTime.UtcNow;
     private TimeSpan _lastTotalProcessorTime = TimeSpan.Zero;
+    private readonly object _cpuLock = new object();
 
     public RedundancyService(ILoggingService logger, RedundancyConfig config, INetworkService? networkService = null)
     {
@@ -596,6 +597,7 @@ public class RedundancyService : IRedundancyService
 
     /// <summary>
     /// 現在のCPU使用率を取得（概算値）
+    /// スレッドセーフ: _cpuLockで排他制御し、NaN/Infinityを防止
     /// </summary>
     private double GetCurrentCpuUsage()
     {
@@ -606,17 +608,31 @@ public class RedundancyService : IRedundancyService
                 return 0.0;
             }
 
-            var now = DateTime.UtcNow;
-            var currentTotalProcessorTime = _currentProcess.TotalProcessorTime;
+            lock (_cpuLock)
+            {
+                var now = DateTime.UtcNow;
+                var currentTotalProcessorTime = _currentProcess.TotalProcessorTime;
 
-            var cpuUsedMs = (currentTotalProcessorTime - _lastTotalProcessorTime).TotalMilliseconds;
-            var totalMsPassed = (now - _lastCpuCheck).TotalMilliseconds;
-            var cpuUsageTotal = cpuUsedMs / (Environment.ProcessorCount * totalMsPassed);
+                var totalMsPassed = (now - _lastCpuCheck).TotalMilliseconds;
+                if (totalMsPassed <= 0)
+                {
+                    return 0.0;
+                }
 
-            _lastCpuCheck = now;
-            _lastTotalProcessorTime = currentTotalProcessorTime;
+                var cpuUsedMs = (currentTotalProcessorTime - _lastTotalProcessorTime).TotalMilliseconds;
+                var cpuUsageTotal = cpuUsedMs / (Environment.ProcessorCount * totalMsPassed);
 
-            return Math.Min(100.0, Math.Max(0.0, cpuUsageTotal * 100.0));
+                _lastCpuCheck = now;
+                _lastTotalProcessorTime = currentTotalProcessorTime;
+
+                var result = cpuUsageTotal * 100.0;
+                if (double.IsNaN(result) || double.IsInfinity(result))
+                {
+                    return 0.0;
+                }
+
+                return Math.Min(100.0, Math.Max(0.0, result));
+            }
         }
         catch (Exception ex)
         {
