@@ -48,9 +48,10 @@ public class SecurityConfig
 
     /// <summary>
     /// 暗号化に使用するパスワード（SecureEthernetTransceiver用）
-    /// 本番環境では環境変数 NONIP_CRYPTO_PASSWORD から読み込むことを推奨
+    /// 環境変数 NONIP_CRYPTO_PASSWORD から読み込み、未設定時は空文字列とする
+    /// UseSecureTransceiver=true の場合はデプロイ時に明示的なシークレット設定が必要
     /// </summary>
-    public string CryptoPassword { get; set; } = "NonIPFileDeliverySecurePassword2025";
+    public string CryptoPassword { get; set; } = Environment.GetEnvironmentVariable("NONIP_CRYPTO_PASSWORD") ?? string.Empty;
 }
 
 public class PerformanceConfig
