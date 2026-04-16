@@ -14,9 +14,27 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        // ロギング初期化
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug()
+        // 設定ファイルを先に読み込み（ロギングレベル設定のため）
+        var config = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json", optional: false)
+            .Build();
+
+        // ロギング初期化（設定ファイルからログレベルを読み込み）
+        var logLevel = config["logging:minimumLevel"] ?? "Information";
+        var loggerConfig = new LoggerConfiguration();
+
+        // ログレベルを設定ファイルから動的に設定
+        loggerConfig = logLevel.ToUpperInvariant() switch
+        {
+            "DEBUG" => loggerConfig.MinimumLevel.Debug(),
+            "INFORMATION" => loggerConfig.MinimumLevel.Information(),
+            "WARNING" => loggerConfig.MinimumLevel.Warning(),
+            "ERROR" => loggerConfig.MinimumLevel.Error(),
+            _ => loggerConfig.MinimumLevel.Information()
+        };
+
+        Log.Logger = loggerConfig
             .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File("logs/non-ip-file-delivery-.log",
                 rollingInterval: RollingInterval.Day,
@@ -26,15 +44,11 @@ class Program
         Log.Information("========================================");
         Log.Information("Non-IP File Delivery System Starting...");
         Log.Information("Version: 1.0.0 - PostgreSQL/SFTP Support");
+        Log.Information("Log Level: {LogLevel}", logLevel);
         Log.Information("========================================");
 
         try
         {
-            // 設定読み込み
-            var config = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: false)
-                .Build();
 
             var interfaceName = config["Network:InterfaceName"] ?? throw new Exception("InterfaceName not configured");
             var remoteMac = config["Network:RemoteMacAddress"] ?? throw new Exception("RemoteMacAddress not configured");

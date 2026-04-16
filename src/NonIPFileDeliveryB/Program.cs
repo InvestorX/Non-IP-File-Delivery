@@ -14,16 +14,38 @@ class Program
 {
     static async Task<int> Main(string[] args)
     {
-        // ロガー初期化
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug()
-            .WriteTo.Console()
-            .WriteTo.File("logs/nonip_b_.log", rollingInterval: RollingInterval.Day)
+        // 設定ファイルを先に読み込み（ロギングレベル設定のため）
+        var config = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.b.json", optional: true)
+            .AddJsonFile("appsettings.json", optional: true)
+            .Build();
+
+        // ロギング初期化（設定ファイルからログレベルを読み込み）
+        var logLevel = config["logging:minimumLevel"] ?? config["Logging:MinimumLevel"] ?? "Information";
+        var loggerConfig = new LoggerConfiguration();
+
+        // ログレベルを設定ファイルから動的に設定
+        loggerConfig = logLevel.ToUpperInvariant() switch
+        {
+            "DEBUG" => loggerConfig.MinimumLevel.Debug(),
+            "INFORMATION" => loggerConfig.MinimumLevel.Information(),
+            "WARNING" => loggerConfig.MinimumLevel.Warning(),
+            "ERROR" => loggerConfig.MinimumLevel.Error(),
+            _ => loggerConfig.MinimumLevel.Information()
+        };
+
+        Log.Logger = loggerConfig
+            .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.File("logs/nonip_b_.log",
+                rollingInterval: RollingInterval.Day,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
 
         try
         {
             Log.Information("=== Non-IP File Delivery B (Receiver) Starting ===");
+            Log.Information("Log Level: {LogLevel}", logLevel);
 
             // 設定（簡略化 - 実運用では設定ファイルから読み込む）
             var interfaceName = "eth1";
