@@ -23,6 +23,10 @@ public class RedundancyService : IRedundancyService
     private readonly object _lockObject = new object();
     private string _localNodeId = string.Empty;
     private string _localMacAddress = string.Empty;
+    private System.Diagnostics.Process? _currentProcess;
+    private DateTime _lastCpuCheck = DateTime.UtcNow;
+    private TimeSpan _lastTotalProcessorTime = TimeSpan.Zero;
+    private readonly object _cpuLock = new object();
 
     public RedundancyService(ILoggingService logger, RedundancyConfig config, INetworkService? networkService = null)
     {
@@ -34,7 +38,18 @@ public class RedundancyService : IRedundancyService
         _currentState = NodeState.Initializing;
 
         InitializeNodes();
-        
+
+        // CPU使用率計測用のプロセス情報を初期化
+        try
+        {
+            _currentProcess = System.Diagnostics.Process.GetCurrentProcess();
+            _lastTotalProcessorTime = _currentProcess.TotalProcessorTime;
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning($"Failed to initialize CPU monitoring: {ex.Message}");
+        }
+
         // ネットワークサービスが利用可能な場合、フレーム受信イベントを購読
         if (_networkService != null)
         {
@@ -503,7 +518,7 @@ public class RedundancyService : IRedundancyService
                 Priority = localNode.Priority,
                 ActiveConnections = localNode.ActiveConnections,
                 MemoryUsageMB = GC.GetTotalMemory(false) / (1024 * 1024),
-                CpuUsagePercent = 0 // TODO: 実装時にCPU使用率を取得
+                CpuUsagePercent = GetCurrentCpuUsage() // CPU使用率を取得
             };
 
             // シリアライズして送信
@@ -578,6 +593,52 @@ public class RedundancyService : IRedundancyService
                 _logger.Error($"Error recording heartbeat from {heartbeat.NodeId}: {ex.Message}");
             }
         });
+    }
+
+    /// <summary>
+    /// 現在のCPU使用率を取得（概算値）
+    /// スレッドセーフ: _cpuLockで排他制御し、NaN/Infinityを防止
+    /// </summary>
+    private double GetCurrentCpuUsage()
+    {
+        try
+        {
+            if (_currentProcess == null)
+            {
+                return 0.0;
+            }
+
+            lock (_cpuLock)
+            {
+                var now = DateTime.UtcNow;
+                var currentTotalProcessorTime = _currentProcess.TotalProcessorTime;
+
+                var totalMsPassed = (now - _lastCpuCheck).TotalMilliseconds;
+                if (totalMsPassed <= 0)
+                {
+                    return 0.0;
+                }
+
+                var cpuUsedMs = (currentTotalProcessorTime - _lastTotalProcessorTime).TotalMilliseconds;
+                var cpuUsageTotal = cpuUsedMs / (Environment.ProcessorCount * totalMsPassed);
+
+                _lastCpuCheck = now;
+                _lastTotalProcessorTime = currentTotalProcessorTime;
+
+                var result = cpuUsageTotal * 100.0;
+                if (double.IsNaN(result) || double.IsInfinity(result))
+                {
+                    return 0.0;
+                }
+
+                return Math.Min(100.0, Math.Max(0.0, result));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug($"Error calculating CPU usage: {ex.Message}");
+            return 0.0;
+        }
     }
 
     #endregion
