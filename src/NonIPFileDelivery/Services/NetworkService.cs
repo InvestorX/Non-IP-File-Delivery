@@ -130,11 +130,16 @@ public class NetworkService : INetworkService, IDisposable
 
                         _logger.Info($"Initializing SecureEthernetTransceiver with remote MAC: {config.RemoteMacAddress}");
 
-                        // Get crypto password from SecurityConfig or environment variable
+                        // Get crypto password from environment variable or SecurityConfig.
+                        // Secure mode must not use a built-in shared default secret.
                         var cryptoPassword = Environment.GetEnvironmentVariable("NONIP_CRYPTO_PASSWORD")
-                            ?? _securityConfig?.CryptoPassword
-                            ?? "NonIPFileDeliverySecurePassword2025";
+                            ?? _securityConfig?.CryptoPassword;
 
+                        if (string.IsNullOrWhiteSpace(cryptoPassword))
+                        {
+                            _logger.Error("SecureEthernetTransceiver requires an explicit crypto password from NONIP_CRYPTO_PASSWORD or SecurityConfig.CryptoPassword");
+                            throw new InvalidOperationException("Missing crypto password for SecureEthernetTransceiver");
+                        }
                         var cryptoEngine = new CryptoEngine(cryptoPassword);
                         
                         _secureTransceiver = new SecureEthernetTransceiver(
